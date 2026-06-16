@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "InFast Go Driver",
+    "slug": "infast-go-driver",
+    "version": "1.0.0",
+    "extra": {
+      "eas": {
+        "projectId": "e3950df6-e2d9-4137-9e13-8721ab20f14e"
+      }
+    },
+    "android": {
+      "package": "com.infastgo.infastgodriver",
+      "versionCode": 1,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "InFast Go haydovchi ilovasiga joylashuvingizni aniqlash uchun ruxsat bering."
+        }
+      ]
+    ]
+  }
+}

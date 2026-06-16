@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "InFast Go User",
+    "slug": "infast-go-user",
+    "version": "1.0.0",
+    "android": {
+      "package": "com.infastgo.infastgouser",
+      "versionCode": 1,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "InFast Go ilovasiga joylashuvingizni aniqlash uchun ruxsat bering."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "8b904b4f-4056-46a2-a204-6db62d741edf"
+      }
+    },
+    "owner": "infastgo",
+    "updates": {
+      "enabled": false
+    }
+  }
+}

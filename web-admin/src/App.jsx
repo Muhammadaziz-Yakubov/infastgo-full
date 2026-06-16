@@ -1,0 +1,3479 @@
+import React, { useState, useEffect } from 'react';
+import {
+  LayoutDashboard,
+  Users,
+  Car,
+  MapPin,
+  Settings,
+  Bell,
+  LogOut,
+  TrendingUp,
+  Activity,
+  Plus,
+  ShieldAlert,
+  ShieldCheck,
+  Send,
+  Loader2,
+  Trash2,
+  History,
+  ChevronDown,
+  ChevronUp,
+  Phone,
+  Clock,
+  Route,
+  DollarSign,
+  Sliders,
+  Search,
+  ArrowUpDown,
+  AlertTriangle,
+  Utensils,
+  Bike,
+  ShoppingBag,
+  Tag,
+} from 'lucide-react';
+import { api, setToken, getToken } from './services/api';
+import { io } from 'socket.io-client';
+
+export default function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [adminUser, setAdminUser] = useState(null);
+  
+  // Login flow states
+  const [loginName, setLoginName] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // Main panel navigation
+  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, users, drivers, live, pricing, notifications
+
+  // Data states
+  const [stats, setStats] = useState({ totalUsers: 0, totalDrivers: 0, activeRides: 0, revenue: 0 });
+  const [usersList, setUsersList] = useState([]);
+  const [driversList, setDriversList] = useState([]);
+  const [liveRides, setLiveRides] = useState([]);
+  const [ridesList, setRidesList] = useState([]);
+
+  // Commission & Debt states
+  const [settings, setSettings] = useState({ commissionPercent: 10, warningDebtLimit: 50000, blockDebtLimit: 100000 });
+  const [commissionStats, setCommissionStats] = useState({ totalCommissionEarned: 0, totalOutstandingDebt: 0, totalPaidDebt: 0, blockedDrivers: 0, warningDrivers: 0 });
+  const [debtDriversList, setDebtDriversList] = useState([]);
+  const [debtSearch, setDebtSearch] = useState('');
+  const [debtPage, setDebtPage] = useState(1);
+  const [debtTotalPages, setDebtTotalPages] = useState(1);
+  const [debtSortBy, setDebtSortBy] = useState('desc');
+  const [debtTotal, setDebtTotal] = useState(0);
+  // Balance adjustment modal state
+  const [balanceModal, setBalanceModal] = useState(null); // { _id, name, surname, balance }
+  const [balanceAdjAmount, setBalanceAdjAmount] = useState('');
+  const [balanceAdjNote, setBalanceAdjNote] = useState('');
+  const [balanceAdjLoading, setBalanceAdjLoading] = useState(false);
+  const [expandedRide, setExpandedRide] = useState(null);
+  const [pricing, setPricing] = useState({
+    tariffs: {
+      standart: { baseFare: 5000, pricePerKm: 1500 },
+      komfort: { baseFare: 7000, pricePerKm: 2000 },
+      biznes: { baseFare: 10000, pricePerKm: 3000 },
+    },
+    surgeMultiplier: 1.0,
+  });
+
+  // Creation/Action forms
+  const [driverModal, setDriverModal] = useState(false);
+  const [newDriver, setNewDriver] = useState({
+    phone: '+99890',
+    name: '',
+    surname: '',
+    carMake: 'Chevrolet',
+    carModel: '',
+    carColor: '',
+    carPlate: '',
+    tariffs: ['standart'],
+  });
+
+  // InFast Eats States
+  const [eatsRestaurants, setEatsRestaurants] = useState([]);
+  const [eatsCouriers, setEatsCouriers] = useState([]);
+  const [eatsOrders, setEatsOrders] = useState([]);
+  const [eatsAnalytics, setEatsAnalytics] = useState(null);
+
+  // Eats Wallet & Finance States
+  const [eatsWalletOverview, setEatsWalletOverview] = useState(null);
+  const [eatsWithdrawals, setEatsWithdrawals] = useState([]);
+  const [eatsWithdrawalFilter, setEatsWithdrawalFilter] = useState('');
+  const [eatsFinanceLoading, setEatsFinanceLoading] = useState(false);
+  const [eatsAdminNote, setEatsAdminNote] = useState('');
+  const [processingWithdrawalId, setProcessingWithdrawalId] = useState(null);
+  const [financeSubTab, setFinanceSubTab] = useState('taxi');
+
+  // Promo Codes state
+  const [promoList, setPromoList] = useState([]);
+  const [promoModal, setPromoModal] = useState(false);
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [newPromo, setNewPromo] = useState({
+    code: '',
+    discount: '',
+    maxUses: '100',
+    service: 'all',
+    expiresAt: '',
+  });
+
+  // Eats Creation Modals
+  const [restaurantModal, setRestaurantModal] = useState(false);
+  const [editingRestaurant, setEditingRestaurant] = useState(null);
+  const [newRestaurant, setNewRestaurant] = useState({
+    name: '',
+    category: 'Fast Food',
+    phone: '+998',
+    address: '',
+    latitude: 41.311081,
+    longitude: 69.240562,
+    login: '',
+    password: '',
+  });
+
+  const [eatsCourierModal, setEatsCourierModal] = useState(false);
+  const [editingEatsCourier, setEditingEatsCourier] = useState(null);
+  const [newEatsCourier, setNewEatsCourier] = useState({
+    name: '',
+    phone: '+998',
+    vehicleType: 'scooter',
+  });
+
+  // Push notifications form
+  const [pushForm, setPushForm] = useState({
+    recipientType: 'all',
+    recipientId: '',
+    title: '',
+    body: '',
+  });
+  const [pushStatus, setPushStatus] = useState('');
+
+  // Socket state for live updates
+  const [socket, setSocket] = useState(null);
+
+  // Mapbox Map state references
+  const mapInstanceRef = React.useRef(null);
+  const mapMarkersRef = React.useRef({});
+  const routeLayersRef = React.useRef([]);
+
+  const updateMapMarkersAndRoutes = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    // --- Update Driver Markers ---
+    const activeDriverIds = new Set();
+    
+    driversList.forEach((driver) => {
+      if (driver.status === 'offline' || !driver.currentLocation) return;
+      
+      const { lat, lng } = driver.currentLocation;
+      const driverId = driver._id;
+      activeDriverIds.add(driverId);
+
+      // Icon element
+      let el = document.getElementById(`marker-driver-${driverId}`);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = `marker-driver-${driverId}`;
+        el.style.fontSize = '24px';
+        el.style.cursor = 'pointer';
+        el.style.transition = 'all 1s ease';
+        el.innerHTML = driver.status === 'busy' ? '🚖' : '🚕';
+        
+        // Add a tooltip/popup on hover/click
+        const popup = new window.mapboxgl.Popup({ offset: 25 }).setHTML(
+          `<div class="text-slate-900 font-sans p-1">
+            <p class="font-bold text-sm">${driver.name} ${driver.surname}</p>
+            <p class="text-xs text-slate-500">${driver.carInfo?.color} ${driver.carInfo?.make} (${driver.carInfo?.plateNumber})</p>
+            <p class="text-[10px] uppercase font-bold mt-1 ${driver.status === 'busy' ? 'text-amber-600' : 'text-emerald-600'}">${driver.status}</p>
+          </div>`
+        );
+
+        const marker = new window.mapboxgl.Marker(el)
+          .setLngLat([lng, lat])
+          .setPopup(popup)
+          .addTo(map);
+
+        mapMarkersRef.current[driverId] = marker;
+      } else {
+        // Just update location
+        mapMarkersRef.current[driverId].setLngLat([lng, lat]);
+        el.innerHTML = driver.status === 'busy' ? '🚖' : '🚕';
+      }
+    });
+
+    // Remove offline driver markers
+    Object.keys(mapMarkersRef.current).forEach((driverId) => {
+      if (!activeDriverIds.has(driverId)) {
+        mapMarkersRef.current[driverId].remove();
+        delete mapMarkersRef.current[driverId];
+      }
+    });
+
+    // --- Update Routes / Ride Lines ---
+    // Remove old route sources and layers
+    routeLayersRef.current.forEach((id) => {
+      if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(id)) map.removeSource(id);
+    });
+    routeLayersRef.current = [];
+
+    // Draw active rides
+    liveRides.forEach((ride) => {
+      if (!ride.pickup || !ride.destination) return;
+      if (ride.status === 'completed' || ride.status === 'cancelled') return;
+
+      const sourceId = `route-source-${ride._id}`;
+      const layerId = `route-layer-${ride._id}`;
+      
+      routeLayersRef.current.push(layerId);
+
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            properties: {},
+            geometry: {
+              type: 'LineString',
+              coordinates: [
+                [ride.pickup.lng, ride.pickup.lat],
+                [ride.destination.lng, ride.destination.lat],
+              ],
+            },
+          },
+        });
+      }
+
+      if (!map.getLayer(layerId)) {
+        map.addLayer({
+          id: layerId,
+          type: 'line',
+          source: sourceId,
+          layout: {
+            'line-join': 'round',
+            'line-cap': 'round',
+          },
+          paint: {
+            'line-color': '#00E676', // Green line for the active route!
+            'line-width': 3,
+            'line-dasharray': [2, 2], // Dotted line style
+          },
+        });
+      }
+
+      // Add pickup A and dest B markers for active rides if not already added
+      const pickupElId = `ride-pickup-${ride._id}`;
+      let pEl = document.getElementById(pickupElId);
+      if (!pEl) {
+        pEl = document.createElement('div');
+        pEl.id = pickupElId;
+        pEl.innerHTML = '<span style="display: flex; align-items: center; justify-content: center; background-color: #10B981; color: #0f172a; font-weight: 800; font-size: 10px; width: 20px; height: 20px; border-radius: 9999px; border: 1px solid white; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">A</span>';
+        new window.mapboxgl.Marker(pEl)
+          .setLngLat([ride.pickup.lng, ride.pickup.lat])
+          .addTo(map);
+      }
+
+      const destElId = `ride-dest-${ride._id}`;
+      let dEl = document.getElementById(destElId);
+      if (!dEl) {
+        dEl = document.createElement('div');
+        dEl.id = destElId;
+        dEl.innerHTML = '<span style="display: flex; align-items: center; justify-content: center; background-color: #EF4444; color: white; font-weight: 800; font-size: 10px; width: 20px; height: 20px; border-radius: 9999px; border: 1px solid white; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">B</span>';
+        new window.mapboxgl.Marker(dEl)
+          .setLngLat([ride.destination.lng, ride.destination.lat])
+          .addTo(map);
+      }
+    });
+  };
+
+  // Initialize Mapbox map
+  useEffect(() => {
+    if (activeTab !== 'live') {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+      mapMarkersRef.current = {};
+      routeLayersRef.current = [];
+      return;
+    }
+
+    if (!window.mapboxgl) {
+      console.error('Mapbox GL library not loaded yet');
+      return;
+    }
+
+    window.mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || '';
+    
+    const map = new window.mapboxgl.Map({
+      container: 'mapbox-admin-map',
+      style: 'mapbox://styles/mapbox/dark-v11',
+      center: [69.240562, 41.311081], // Tashkent center
+      zoom: 12,
+    });
+
+    mapInstanceRef.current = map;
+
+    map.on('load', () => {
+      updateMapMarkersAndRoutes();
+    });
+
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+      mapMarkersRef.current = {};
+      routeLayersRef.current = [];
+    };
+  }, [activeTab]);
+
+  // Update map coordinates whenever drivers or active rides list changes
+  useEffect(() => {
+    if (activeTab === 'live' && mapInstanceRef.current) {
+      updateMapMarkersAndRoutes();
+    }
+  }, [driversList, liveRides, activeTab]);
+
+
+  // Check login on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      const token = getToken();
+      if (token) {
+        try {
+          const profile = await api.getProfile();
+          if (profile.success && profile.user.role === 'admin') {
+            setAdminUser(profile.user);
+            setIsLoggedIn(true);
+          } else {
+            setToken(null);
+          }
+        } catch (err) {
+          setToken(null);
+        }
+      }
+    };
+    checkAuth();
+  }, []);
+
+  // Fetch data depending on active tab
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    if (activeTab === 'dashboard') {
+      fetchDashboardData();
+    } else if (activeTab === 'users') {
+      fetchUsersData();
+    } else if (activeTab === 'drivers') {
+      fetchDriversData();
+    } else if (activeTab === 'live') {
+      fetchLiveTracking();
+    } else if (activeTab === 'pricing') {
+      fetchPricingData();
+    } else if (activeTab === 'rides') {
+      fetchRidesData();
+    } else if (activeTab === 'system_settings') {
+      fetchSettings();
+    } else if (activeTab === 'eats_restaurants') {
+      fetchEatsRestaurants();
+    } else if (activeTab === 'eats_couriers') {
+      fetchEatsCouriers();
+    } else if (activeTab === 'eats_orders') {
+      fetchEatsOrders();
+    } else if (activeTab === 'eats_analytics') {
+      fetchEatsAnalytics();
+    } else if (activeTab === 'promo') {
+      fetchPromoCodes();
+    }
+  }, [isLoggedIn, activeTab]);
+
+  useEffect(() => {
+    if (isLoggedIn && activeTab === 'finance') {
+      if (financeSubTab === 'taxi') {
+        fetchCommissionStats();
+        fetchDriversDebts(1, debtSearch, debtSortBy);
+      } else {
+        fetchEatsFinanceData();
+      }
+    }
+  }, [isLoggedIn, activeTab, financeSubTab, eatsWithdrawalFilter]);
+
+  // Setup Socket.io for live updates when logged in
+  useEffect(() => {
+    if (!isLoggedIn || !adminUser) return;
+
+    // Connect socket dynamically based on API base URL
+    const socketUrl = api.baseUrl ? api.baseUrl.replace('/api', '') : 'https://infastgo-backendd.onrender.com';
+    const s = io(socketUrl);
+    setSocket(s);
+
+    s.on('connect', () => {
+      console.log('[Admin Socket] Connected');
+      s.emit('join', { userId: adminUser.id, role: 'admin' });
+    });
+
+    s.on('rideUpdate', (ride) => {
+      console.log('[Admin Socket] Live ride status update:', ride);
+      // Update local state if we are on live tab
+      setLiveRides((prev) => {
+        const idx = prev.findIndex((r) => r._id === ride._id);
+        if (idx > -1) {
+          const updated = [...prev];
+          updated[idx] = ride;
+          return updated;
+        } else {
+          return [ride, ...prev];
+        }
+      });
+      // Refresh stats automatically
+      fetchDashboardData();
+    });
+
+    s.on('driverLocationUpdate', (locUpdate) => {
+      // Update driver coordinate in live panel
+      setDriversList((prev) =>
+        prev.map((drv) =>
+          drv._id === locUpdate.driverId
+            ? { ...drv, currentLocation: { lat: locUpdate.lat, lng: locUpdate.lng } }
+            : drv
+        )
+      );
+    });
+
+    s.on('driverDebtUpdate', (data) => {
+      console.log('[Admin Socket] Driver debt update received:', data);
+      setDebtDriversList((prev) =>
+        prev.map((drv) =>
+          drv._id === data.driverId
+            ? {
+                ...drv,
+                balance: data.balance,
+                debt: Math.abs(data.balance),
+                isBlocked: data.isBlocked,
+                totalCommission: data.totalCommission,
+                status: data.status,
+              }
+            : drv
+        )
+      );
+      fetchCommissionStats();
+      fetchDashboardData();
+    });
+
+    s.on('disconnect', () => {
+      console.log('[Admin Socket] Disconnected');
+    });
+
+    return () => {
+      s.disconnect();
+    };
+  }, [isLoggedIn, adminUser]);
+
+  // Data Fetching functions
+  const fetchDashboardData = async () => {
+    try {
+      const res = await api.getStats();
+      if (res.success) setStats(res.stats);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchUsersData = async () => {
+    try {
+      const res = await api.getUsers();
+      if (res.success) setUsersList(res.users);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchDriversData = async () => {
+    try {
+      const res = await api.getDrivers();
+      if (res.success) setDriversList(res.drivers);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchLiveTracking = async () => {
+    try {
+      const res = await api.getLive();
+      if (res.success) {
+        setLiveRides(res.activeRides);
+        setDriversList(res.drivers);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchPricingData = async () => {
+    try {
+      const res = await api.getPricing();
+      if (res.success) setPricing(res.pricing);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchRidesData = async () => {
+    try {
+      const res = await api.getRides();
+      if (res.success) setRidesList(res.rides);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchSettings = async () => {
+    try {
+      const res = await api.getSettings();
+      if (res.success) setSettings(res.settings);
+    } catch (err) {
+      console.error('Error fetching settings:', err);
+    }
+  };
+
+  const fetchCommissionStats = async () => {
+    try {
+      const res = await api.getCommissionsStats();
+      if (res.success) setCommissionStats(res.statistics);
+    } catch (err) {
+      console.error('Error fetching commission stats:', err);
+    }
+  };
+
+  const fetchDriversDebts = async (page = 1, search = debtSearch, sortBy = debtSortBy) => {
+    try {
+      const res = await api.getDriversDebts({ page, search, sortByDebt: sortBy });
+      if (res.success) {
+        setDebtDriversList(res.drivers);
+        setDebtPage(res.pagination.page);
+        setDebtTotalPages(res.pagination.pages);
+        setDebtTotal(res.pagination.total);
+      }
+    } catch (err) {
+      console.error('Error fetching drivers debts:', err);
+    }
+  };
+
+  // Eats Helper Functions
+  const fetchEatsRestaurants = async () => {
+    try {
+      const res = await api.getEatsRestaurants();
+      if (res.success) setEatsRestaurants(res.restaurants);
+    } catch (err) {
+      console.error('Error fetching eats restaurants:', err);
+    }
+  };
+
+  const fetchEatsCouriers = async () => {
+    try {
+      const res = await api.getEatsCouriers();
+      if (res.success) setEatsCouriers(res.couriers);
+    } catch (err) {
+      console.error('Error fetching eats couriers:', err);
+    }
+  };
+
+  const fetchEatsOrders = async () => {
+    try {
+      const res = await api.getEatsOrders();
+      if (res.success) setEatsOrders(res.orders);
+    } catch (err) {
+      console.error('Error fetching eats orders:', err);
+    }
+  };
+
+  const fetchEatsAnalytics = async () => {
+    try {
+      const res = await api.getEatsAnalytics();
+      if (res.success) setEatsAnalytics(res.analytics);
+    } catch (err) {
+      console.error('Error fetching eats analytics:', err);
+    }
+  };
+
+  const fetchPromoCodes = async () => {
+    try {
+      const res = await api.getPromoCodes();
+      if (res.success) setPromoList(res.promos);
+    } catch (err) {
+      console.error('Promo codes fetch error:', err);
+    }
+  };
+
+  const handleCreatePromo = async (e) => {
+    e.preventDefault();
+    if (!newPromo.code.trim() || !newPromo.discount) {
+      alert('Kod va chegirma foizini kiriting');
+      return;
+    }
+    setPromoLoading(true);
+    try {
+      const payload = {
+        code: newPromo.code.trim().toUpperCase(),
+        discount: Number(newPromo.discount),
+        maxUses: newPromo.maxUses ? Number(newPromo.maxUses) : 100,
+        service: newPromo.service,
+        expiresAt: newPromo.expiresAt || null,
+      };
+      const res = await api.createPromoCode(payload);
+      if (res.success) {
+        setPromoList(prev => [res.promo, ...prev]);
+        setPromoModal(false);
+        setNewPromo({ code: '', discount: '', maxUses: '100', service: 'all', expiresAt: '' });
+      }
+    } catch (err) {
+      alert(err.message || 'Xatolik yuz berdi');
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  const handleTogglePromo = async (id) => {
+    try {
+      const res = await api.togglePromoCode(id);
+      if (res.success) {
+        setPromoList(prev => prev.map(p => p._id === id ? { ...p, isActive: res.promo.isActive } : p));
+      }
+    } catch (err) {
+      alert(err.message || 'Xatolik');
+    }
+  };
+
+  const handleDeletePromo = async (id, code) => {
+    if (!window.confirm(`"${code}" promokodni o'chirmoqchimisiz?`)) return;
+    try {
+      await api.deletePromoCode(id);
+      setPromoList(prev => prev.filter(p => p._id !== id));
+    } catch (err) {
+      alert(err.message || 'Xatolik');
+    }
+  };
+
+  const fetchEatsFinanceData = async () => {
+    try {
+      setEatsFinanceLoading(true);
+      const [overviewRes, withdrawalsRes] = await Promise.all([
+        api.getEatsWalletOverview(),
+        api.getEatsWithdrawals(eatsWithdrawalFilter || undefined),
+      ]);
+      if (overviewRes.success) {
+        setEatsWalletOverview(overviewRes.overview || null);
+      }
+      if (withdrawalsRes.success) {
+        setEatsWithdrawals(withdrawalsRes.withdrawals || []);
+      }
+    } catch (err) {
+      console.error('Eats finance fetch error:', err);
+    } finally {
+      setEatsFinanceLoading(false);
+    }
+  };
+
+  const handleUpdateEatsWithdrawal = async (id, status) => {
+    try {
+      setLoading(true);
+      const res = await api.updateEatsWithdrawal(id, status, eatsAdminNote);
+      if (res.success) {
+        alert(`Chiqarish so'rovi yangilandi: ${status}`);
+        setEatsAdminNote('');
+        setProcessingWithdrawalId(null);
+        fetchEatsFinanceData();
+      }
+    } catch (err) {
+      alert(err.message || 'Xatolik yuz berdi');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateRestaurant = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        name: newRestaurant.name,
+        category: newRestaurant.category,
+        phone: newRestaurant.phone,
+        address: newRestaurant.address,
+        lat: newRestaurant.latitude,
+        lng: newRestaurant.longitude,
+        login: newRestaurant.login,
+        password: newRestaurant.password,
+      };
+      let res;
+      if (editingRestaurant) {
+        res = await api.updateEatsRestaurant(editingRestaurant._id, payload);
+      } else {
+        res = await api.createEatsRestaurant(payload);
+      }
+      if (res.success) {
+        alert(editingRestaurant ? 'Restoran tahrirlandi!' : 'Restoran qo\'shildi!');
+        setRestaurantModal(false);
+        setEditingRestaurant(null);
+        setNewRestaurant({
+          name: '',
+          category: 'Fast Food',
+          phone: '+998',
+          address: '',
+          latitude: 41.311081,
+          longitude: 69.240562,
+          login: '',
+          password: '',
+        });
+        fetchEatsRestaurants();
+      }
+    } catch (err) {
+      alert(err.message || 'Xatolik yuz berdi');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggleEatsRestaurant = async (id) => {
+    try {
+      const res = await api.toggleEatsRestaurant(id);
+      if (res.success) {
+        setEatsRestaurants(prev => prev.map(r => r._id === id ? { ...r, isActive: res.restaurant.isActive } : r));
+      }
+    } catch (err) {
+      alert(err.message || 'Xatolik yuz berdi');
+    }
+  };
+
+  const handleCreateEatsCourier = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      let res;
+      if (editingEatsCourier) {
+        res = await api.updateEatsCourier(editingEatsCourier._id, newEatsCourier);
+      } else {
+        res = await api.createEatsCourier(newEatsCourier);
+      }
+      if (res.success) {
+        alert(editingEatsCourier ? 'Kurer tahrirlandi!' : 'Kurer qo\'shildi!');
+        setEatsCourierModal(false);
+        setEditingEatsCourier(null);
+        setNewEatsCourier({
+          name: '',
+          phone: '+998',
+          vehicleType: 'scooter',
+        });
+        fetchEatsCouriers();
+      }
+    } catch (err) {
+      alert(err.message || 'Xatolik yuz berdi');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUpdateSettings = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    if (settings.commissionPercent < 0 || settings.commissionPercent > 100) {
+      alert("Komissiya foizi 0 va 100 oralig'ida bo'lishi kerak!");
+      setLoading(false);
+      return;
+    }
+    if (settings.warningDebtLimit < 0) {
+      alert("Ogohlantirish limiti 0 dan katta yoki teng bo'lishi kerak!");
+      setLoading(false);
+      return;
+    }
+    if (settings.blockDebtLimit <= settings.warningDebtLimit) {
+      alert("Bloklash limiti ogohlantirish limitidan katta bo'lishi kerak!");
+      setLoading(false);
+      return;
+    }
+    try {
+      const res = await api.updateSettings(settings);
+      if (res.success) alert('Tizim sozlamalari muvaffaqiyatli saqlandi!');
+    } catch (err) {
+      alert(err.message || 'Xatolik yuz berdi');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAdjustBalance = async (e) => {
+    e.preventDefault();
+    const amt = parseFloat(balanceAdjAmount);
+    if (isNaN(amt)) {
+      alert('To\'g\'ri summa kiriting');
+      return;
+    }
+    setBalanceAdjLoading(true);
+    try {
+      const res = await api.adjustDriverBalance(balanceModal._id, amt, balanceAdjNote);
+      if (res.success) {
+        alert(`Balans yangilandi! Yangi balans: ${res.driver.balance.toLocaleString()} UZS`);
+        setBalanceModal(null);
+        setBalanceAdjAmount('');
+        setBalanceAdjNote('');
+        fetchDriversDebts(debtPage, debtSearch, debtSortBy);
+        fetchCommissionStats();
+      }
+    } catch (err) {
+      alert(err.message || 'Xatolik yuz berdi');
+    } finally {
+      setBalanceAdjLoading(false);
+    }
+  };
+
+  // Admin Login Handling (username/password)
+  const handleAdminLogin = async (e) => {
+    e.preventDefault();
+    if (!loginName || !loginPassword) {
+      setError('Login va parolni kiriting');
+      return;
+    }
+    setError('');
+    setLoading(true);
+
+    try {
+      const res = await api.adminLogin(loginName, loginPassword);
+      if (res.success) {
+        if (res.user.role !== 'admin') {
+          setError('Kirish taqiqlandi. Ushbu hisob administrator emas.');
+          setToken(null);
+        } else {
+          setAdminUser(res.user);
+          setToken(res.token);
+          setIsLoggedIn(true);
+        }
+      }
+    } catch (err) {
+      setError(err.message || 'Tizimga kirishda xatolik');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // User Action handling
+  const handleToggleBlockUser = async (userId) => {
+    try {
+      const res = await api.blockUser(userId);
+      if (res.success) {
+        setUsersList((prev) =>
+          prev.map((u) => (u._id === userId ? { ...u, isBlocked: res.user.isBlocked } : u))
+        );
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  // Driver actions
+  const handleToggleDriverActive = async (driverId) => {
+    try {
+      const res = await api.toggleDriverActive(driverId);
+      if (res.success) {
+        setDriversList((prev) =>
+          prev.map((d) => (d._id === driverId ? { ...d, isActive: res.driver.isActive } : d))
+        );
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleDeleteDriver = async (driverId, driverName) => {
+    if (!window.confirm(`"${driverName}" ni o'chirmoqchimisiz? Bu amal qaytarib bo'lmaydi!`)) return;
+    try {
+      const res = await api.deleteDriver(driverId);
+      if (res.success) {
+        setDriversList((prev) => prev.filter((d) => d._id !== driverId));
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleCreateDriver = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const payload = {
+        phone: newDriver.phone,
+        name: newDriver.name,
+        surname: newDriver.surname,
+        carInfo: {
+          make: newDriver.carMake,
+          model: newDriver.carModel,
+          color: newDriver.carColor,
+          plateNumber: newDriver.carPlate,
+        },
+        tariffs: newDriver.tariffs,
+      };
+
+      const res = await api.createDriver(payload);
+      if (res.success) {
+        setDriversList((prev) => [res.driver, ...prev]);
+        setDriverModal(false);
+        setNewDriver({
+          phone: '+99890',
+          name: '',
+          surname: '',
+          carMake: 'Chevrolet',
+          carModel: '',
+          carColor: '',
+          carPlate: '',
+          tariffs: ['standart'],
+        });
+      }
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Pricing Actions
+  const handleUpdatePricing = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await api.updatePricing(pricing);
+      if (res.success) {
+        alert('Tariflar yangilandi!');
+      }
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Push Notifications Actions
+  const handleSendPush = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setPushStatus('');
+    try {
+      const res = await api.sendPush(pushForm);
+      if (res.success) {
+        setPushStatus('Push xabarnoma muvaffaqiyatli yuborildi!');
+        setPushForm((prev) => ({ ...prev, title: '', body: '' }));
+      }
+    } catch (err) {
+      setPushStatus(`Xatolik: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setToken(null);
+    setIsLoggedIn(false);
+    setAdminUser(null);
+    setLoginName('');
+    setLoginPassword('');
+  };
+
+  // Seed DB manual trigger helper
+  const handleTriggerSeeding = async () => {
+    try {
+      const res = await api.triggerSeed();
+      if (res && res.success) {
+        alert('Demo ma\'lumotlar yuklandi!');
+        if (isLoggedIn) {
+          fetchDashboardData();
+        }
+      } else {
+        alert('Seeding xatoligi');
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  // Main UI Renders
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 p-6">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl relative">
+          <div className="absolute top-4 right-4">
+            <button
+              onClick={handleTriggerSeeding}
+              className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-400 py-1 px-2.5 rounded border border-slate-700 font-semibold"
+            >
+              🛠️ Seed Database
+            </button>
+          </div>
+          <div className="text-center mb-8">
+            <h1 className="text-3xl font-extrabold text-green-400 tracking-tight">InFast Go</h1>
+            <p className="text-slate-400 text-sm mt-2">Administrator Boshqaruv Paneli</p>
+          </div>
+
+          <form onSubmit={handleAdminLogin} className="space-y-6">
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                Login
+              </label>
+              <input
+                type="text"
+                value={loginName}
+                onChange={(e) => setLoginName(e.target.value)}
+                className="w-full bg-slate-950 text-slate-100 placeholder-slate-700 border border-slate-800 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-400 focus:outline-none text-lg"
+                placeholder="Login kiriting"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                Parol
+              </label>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                className="w-full bg-slate-950 text-slate-100 placeholder-slate-700 border border-slate-800 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-400 focus:outline-none text-lg"
+                placeholder="••••••••"
+              />
+            </div>
+
+            {error && <div className="text-red-400 text-sm">{error}</div>}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-3 px-4 rounded-xl transition duration-150 flex items-center justify-center"
+            >
+              {loading ? <Loader2 className="animate-spin mr-2" size={18} /> : 'Tizimga kirish'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 flex">
+      {/* Sidebar navigation */}
+      <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col justify-between shrink-0">
+        <div>
+          <div className="p-6 border-b border-slate-800 flex items-center space-x-3">
+            <span className="text-2xl">🚖</span>
+            <div>
+              <h1 className="text-lg font-bold text-slate-100">InFast Go</h1>
+              <p className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase">
+                Panel v1.0
+              </p>
+            </div>
+          </div>
+          <nav className="p-4 space-y-1">
+            <button
+              onClick={() => setActiveTab('dashboard')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'dashboard'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <LayoutDashboard size={18} />
+              <span>Dashboard</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('live')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'live'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <Activity size={18} />
+              <span>Jonli Monitoring</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('rides')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'rides'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <History size={18} />
+              <span>Safarlar Tarixi</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('drivers')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'drivers'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <Car size={18} />
+              <span>Haydovchilar</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('users')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'users'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <Users size={18} />
+              <span>Yo'lovchilar</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('pricing')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'pricing'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <Settings size={18} />
+              <span>Tarif Sozlamalari</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('notifications')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'notifications'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <Bell size={18} />
+              <span>Push Xabarlar</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('finance')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'finance'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <DollarSign size={18} />
+              <span>Moliya boshqaruvi</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('system_settings')}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                activeTab === 'system_settings'
+                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+              }`}
+            >
+              <Sliders size={18} />
+              <span>Tizim Sozlamalari</span>
+            </button>
+
+            {/* InFast Eats Section */}
+            <div className="pt-4 mt-4 border-t border-slate-800">
+              <p className="px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">InFast Eats</p>
+              
+              <button
+                onClick={() => setActiveTab('eats_restaurants')}
+                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                  activeTab === 'eats_restaurants'
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <Utensils size={18} />
+                <span>Restoranlar</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('eats_couriers')}
+                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                  activeTab === 'eats_couriers'
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <Bike size={18} />
+                <span>Eats Kurerlar</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('eats_orders')}
+                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                  activeTab === 'eats_orders'
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <ShoppingBag size={18} />
+                <span>Eats Buyurtmalar</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('eats_analytics')}
+                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                  activeTab === 'eats_analytics'
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <TrendingUp size={18} />
+                <span>Eats Analytics</span>
+              </button>
+            </div>
+
+            {/* Promo Codes Section */}
+            <div className="pt-4 mt-2 border-t border-slate-800">
+              <p className="px-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Marketing</p>
+              <button
+                onClick={() => setActiveTab('promo')}
+                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition font-medium text-sm ${
+                  activeTab === 'promo'
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <Tag size={18} />
+                <span>Promokodlar</span>
+              </button>
+            </div>
+          </nav>
+        </div>
+
+        <div className="p-4 border-t border-slate-800">
+          <div className="flex items-center justify-between mb-4 px-2">
+            <span className="text-xs text-slate-500">Admin: {adminUser.phone}</span>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center space-x-3 px-4 py-3 text-red-400 hover:bg-red-500/5 rounded-xl transition font-medium text-sm border border-transparent hover:border-red-500/10"
+          >
+            <LogOut size={18} />
+            <span>Chiqish</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Pane */}
+      <main className="flex-1 overflow-y-auto p-8">
+        {activeTab === 'dashboard' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Dashboard</h2>
+                <p className="text-slate-400 text-sm">Tizim holati bo'yicha umumiy statistika</p>
+              </div>
+              <button
+                onClick={fetchDashboardData}
+                className="bg-slate-900 border border-slate-800 text-slate-300 py-2.5 px-4 rounded-xl hover:bg-slate-805 text-sm transition"
+              >
+                Yangilash
+              </button>
+            </div>
+
+            {/* Metrics cards */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">
+                    Foydalanuvchilar (Yo'lovchi)
+                  </span>
+                  <span className="text-3xl font-extrabold text-slate-100 block mt-2">
+                    {stats.totalUsers}
+                  </span>
+                </div>
+                <div className="bg-green-500/10 p-3.5 rounded-xl text-green-400">
+                  <Users size={22} />
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">
+                    Ro'yxatdan o'tgan Haydovchilar
+                  </span>
+                  <span className="text-3xl font-extrabold text-slate-100 block mt-2">
+                    {stats.totalDrivers}
+                  </span>
+                </div>
+                <div className="bg-green-500/10 p-3.5 rounded-xl text-green-400">
+                  <Car size={22} />
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">
+                    Faol buyurtmalar (Rides)
+                  </span>
+                  <span className="text-3xl font-extrabold text-slate-100 block mt-2">
+                    {stats.activeRides}
+                  </span>
+                </div>
+                <div className="bg-green-500/10 p-3.5 rounded-xl text-green-400">
+                  <Activity size={22} />
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">
+                    Umumiy tushum
+                  </span>
+                  <span className="text-3xl font-extrabold text-green-400 block mt-2">
+                    {stats.revenue.toLocaleString()} UZS
+                  </span>
+                </div>
+                <div className="bg-green-500/10 p-3.5 rounded-xl text-green-400">
+                  <TrendingUp size={22} />
+                </div>
+              </div>
+            </div>
+
+            {/* Quick action list / welcome card */}
+            <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl flex flex-col md:flex-row md:items-center justify-between">
+              <div className="mb-4 md:mb-0">
+                <h3 className="text-lg font-bold text-slate-100">Jonli rejimda boshqarish</h3>
+                <p className="text-slate-400 text-sm mt-1">
+                  Xaritada buyurtmalar oqimini va haydovchilar holatini jonli monitoring orqali kuzatib boring.
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveTab('live')}
+                className="bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-3 px-6 rounded-xl transition duration-150 inline-flex items-center justify-center text-sm"
+              >
+                Jonli Monitoringga o'tish
+              </button>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'users' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Yo'lovchilar</h2>
+                <p className="text-slate-400 text-sm">Foydalanuvchilar ro'yxati va bloklash boshqaruvi</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-800 text-xs font-bold text-slate-400 uppercase bg-slate-900/50">
+                    <th className="py-4 px-6">Ism / Familiya</th>
+                    <th className="py-4 px-6">Telefon Raqam</th>
+                    <th className="py-4 px-6">Rol</th>
+                    <th className="py-4 px-6">Holat</th>
+                    <th className="py-4 px-6 text-right">Amal</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-sm">
+                  {usersList.map((user) => (
+                    <tr key={user._id} className="hover:bg-slate-800/20">
+                      <td className="py-4 px-6 font-semibold">
+                        {user.name || 'Noma\'lum'} {user.surname || ''}
+                      </td>
+                      <td className="py-4 px-6 text-slate-300">{user.phone}</td>
+                      <td className="py-4 px-6 text-slate-400">
+                        <span className="bg-slate-800 py-1 px-2.5 rounded text-xs">
+                          {user.role}
+                        </span>
+                      </td>
+                      <td className="py-4 px-6">
+                        {user.isBlocked ? (
+                          <span className="text-red-400 inline-flex items-center space-x-1.5 font-medium text-xs">
+                            <ShieldAlert size={14} />
+                            <span>Bloklangan</span>
+                          </span>
+                        ) : (
+                          <span className="text-green-400 inline-flex items-center space-x-1.5 font-medium text-xs">
+                            <ShieldCheck size={14} />
+                            <span>Faol</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-4 px-6 text-right">
+                        <button
+                          onClick={() => handleToggleBlockUser(user._id)}
+                          className={`py-1.5 px-3.5 rounded-lg text-xs font-semibold transition ${
+                            user.isBlocked
+                              ? 'bg-green-500/10 text-green-400 hover:bg-green-500/20'
+                              : 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                          }`}
+                        >
+                          {user.isBlocked ? 'Blokdan ochish' : 'Bloklash'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {usersList.length === 0 && (
+                    <tr>
+                      <td colSpan="5" className="py-8 text-center text-slate-500">
+                        Yo'lovchilar topilmadi
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'drivers' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Haydovchilar</h2>
+                <p className="text-slate-400 text-sm">Haydovchi akkauntlari va mashina ma'lumotlari boshqaruvi</p>
+              </div>
+              <button
+                onClick={() => setDriverModal(true)}
+                className="bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-sm flex items-center transition"
+              >
+                <Plus size={18} className="mr-1.5" /> Haydovchi Qo'shish
+              </button>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-800 text-xs font-bold text-slate-400 uppercase bg-slate-900/50">
+                    <th className="py-4 px-4 w-20">ID</th>
+                    <th className="py-4 px-6">Haydovchi</th>
+                    <th className="py-4 px-6">Telefon</th>
+                    <th className="py-4 px-6">Mashina</th>
+                    <th className="py-4 px-6">Reyting / Balans</th>
+                    <th className="py-4 px-6">Tizim holati</th>
+                    <th className="py-4 px-6">Akkaunt holati</th>
+                    <th className="py-4 px-6 text-right">Amal</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-sm">
+                  {driversList.map((drv) => (
+                    <tr key={drv._id} className="hover:bg-slate-800/20">
+                      <td className="py-4 px-4">
+                        {drv.driverId ? (
+                          <span className="inline-flex items-center bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-lg px-2.5 py-1 text-xs font-bold tracking-wider">
+                            #{drv.driverId}
+                          </span>
+                        ) : (
+                          <span className="text-slate-600 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="py-4 px-6 font-semibold">
+                        {drv.name} {drv.surname}
+                      </td>
+                      <td className="py-4 px-6 text-slate-300">{drv.phone}</td>
+                      <td className="py-4 px-6 text-slate-300">
+                        <div>
+                          {drv.carInfo?.color} {drv.carInfo?.make} {drv.carInfo?.model}
+                        </div>
+                        <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                          {drv.carInfo?.plateNumber}
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {(drv.tariffs || []).map(t => (
+                            <span key={t} className="text-[9px] font-bold uppercase tracking-wider bg-green-500/10 text-green-400 border border-green-500/20 px-1.5 py-0.5 rounded">
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-4 px-6 text-slate-300">
+                        <div>⭐️ {drv.rating?.toFixed(2) || '5.00'}</div>
+                        <div className="text-xs text-green-400 mt-0.5">
+                          {drv.earnings?.toLocaleString()} UZS
+                        </div>
+                      </td>
+                      <td className="py-4 px-6">
+                        <span
+                          className={`inline-block w-2.5 h-2.5 rounded-full mr-2 ${
+                            drv.status === 'online'
+                              ? 'bg-green-400'
+                              : drv.status === 'busy'
+                              ? 'bg-yellow-400'
+                              : 'bg-slate-600'
+                          }`}
+                        ></span>
+                        <span className="capitalize text-slate-300">{drv.status}</span>
+                      </td>
+                      <td className="py-4 px-6">
+                        {drv.isActive ? (
+                          <span className="text-green-400 font-medium text-xs">Faol</span>
+                        ) : (
+                          <span className="text-red-400 font-medium text-xs">Faolsiz</span>
+                        )}
+                      </td>
+                      <td className="py-4 px-6 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => handleToggleDriverActive(drv._id)}
+                            className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition ${
+                              drv.isActive
+                                ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                                : 'bg-green-500/10 text-green-400 hover:bg-green-500/20'
+                            }`}
+                          >
+                            {drv.isActive ? 'Faolsizlantirish' : 'Faollashtirish'}
+                          </button>
+                          <button
+                            onClick={() => handleDeleteDriver(drv._id, `${drv.name} ${drv.surname}`)}
+                            className="py-1.5 px-2.5 rounded-lg text-xs font-semibold transition bg-red-600/10 text-red-500 hover:bg-red-600/25 border border-red-600/20"
+                            title="Haydovchini o'chirish"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {driversList.length === 0 && (
+                    <tr>
+                      <td colSpan="8" className="py-8 text-center text-slate-500">
+                        Haydovchilar mavjud emas
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Create Driver Modal */}
+            {driverModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl">
+                  <h3 className="text-xl font-bold mb-4">Yangi Haydovchi Qo'shish</h3>
+                  <form onSubmit={handleCreateDriver} className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Ismi</label>
+                        <input
+                          type="text"
+                          required
+                          value={newDriver.name}
+                          onChange={(e) => setNewDriver({ ...newDriver, name: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                          placeholder="Bahodir"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Familiyasi</label>
+                        <input
+                          type="text"
+                          required
+                          value={newDriver.surname}
+                          onChange={(e) => setNewDriver({ ...newDriver, surname: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                          placeholder="Rahimov"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Telefon Raqami</label>
+                      <input
+                        type="text"
+                        required
+                        value={newDriver.phone}
+                        onChange={(e) => setNewDriver({ ...newDriver, phone: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        placeholder="+998901234567"
+                      />
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-4">
+                      <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                        Mashina Ma'lumotlari
+                      </h4>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">Brend (Make)</label>
+                          <input
+                            type="text"
+                            required
+                            value={newDriver.carMake}
+                            onChange={(e) => setNewDriver({ ...newDriver, carMake: e.target.value })}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">Model</label>
+                          <input
+                            type="text"
+                            required
+                            value={newDriver.carModel}
+                            onChange={(e) => setNewDriver({ ...newDriver, carModel: e.target.value })}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                            placeholder="Cobalt"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">Rangi</label>
+                          <input
+                            type="text"
+                            required
+                            value={newDriver.carColor}
+                            onChange={(e) => setNewDriver({ ...newDriver, carColor: e.target.value })}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                            placeholder="Oq"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-1">Davlat Raqami</label>
+                          <input
+                            type="text"
+                            required
+                            value={newDriver.carPlate}
+                            onChange={(e) => setNewDriver({ ...newDriver, carPlate: e.target.value })}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                            placeholder="01A123BC"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-4">
+                      <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                        Tariflar (Maksimum 2 ta)
+                      </h4>
+                      <div className="flex space-x-6 bg-slate-950 p-3.5 rounded-xl border border-slate-850">
+                        {['standart', 'komfort', 'biznes'].map((tariff) => {
+                          const isChecked = (newDriver.tariffs || []).includes(tariff);
+                          return (
+                            <label key={tariff} className="flex items-center space-x-2 text-sm text-slate-300 cursor-pointer capitalize">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  let updatedTariffs = [...(newDriver.tariffs || [])];
+                                  if (e.target.checked) {
+                                    if (updatedTariffs.length >= 2) {
+                                      alert("Ko'pi bilan 2 ta tarif tanlash mumkin!");
+                                      return;
+                                    }
+                                    updatedTariffs.push(tariff);
+                                  } else {
+                                    updatedTariffs = updatedTariffs.filter(t => t !== tariff);
+                                  }
+                                  setNewDriver({ ...newDriver, tariffs: updatedTariffs });
+                                }}
+                                className="rounded border-slate-800 bg-slate-900 text-green-400 focus:ring-green-400 w-4 h-4"
+                              />
+                              <span className="select-none font-medium">{tariff}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end space-x-3 pt-4 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setDriverModal(false)}
+                        className="bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 px-4 rounded-xl text-sm transition"
+                      >
+                        Bekor qilish
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-2 px-5 rounded-xl text-sm transition"
+                      >
+                        Qo'shish
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'live' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Jonli Monitoring</h2>
+                <p className="text-slate-400 text-sm">Faol sayohatlar va online haydovchilar</p>
+              </div>
+              <button
+                onClick={fetchLiveTracking}
+                className="bg-slate-900 border border-slate-800 text-slate-300 py-2.5 px-4 rounded-xl hover:bg-slate-805 text-sm transition"
+              >
+                Yangilash
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Active rides list */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg h-[600px] flex flex-col justify-between">
+                <div>
+                  <h3 className="text-lg font-bold mb-4 flex items-center">
+                    <Activity size={18} className="text-green-400 mr-2 animate-pulse" />
+                    Faol buyurtmalar ({liveRides.length})
+                  </h3>
+                  <div className="space-y-4 overflow-y-auto max-h-[480px]">
+                    {liveRides.map((ride) => (
+                      <div
+                        key={ride._id}
+                        className="bg-slate-950 border border-slate-850 rounded-xl p-4 space-y-3"
+                      >
+                        <div className="flex justify-between items-start">
+                          <span className="bg-yellow-400/10 text-yellow-400 border border-yellow-400/20 py-0.5 px-2.5 rounded text-[10px] uppercase font-bold tracking-wider">
+                            {ride.status}
+                          </span>
+                          <span className="text-green-400 font-bold text-sm">
+                            {ride.price?.toLocaleString()} UZS
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400 space-y-1">
+                          <p>🟢 A (Jo'nash): {ride.pickup?.address}</p>
+                          <p>🔴 B (Borish): {ride.destination?.address}</p>
+                        </div>
+                        <div className="text-[11px] text-slate-500 pt-2 border-t border-slate-850 flex justify-between">
+                          <span>Yo'lovchi: {ride.userId?.name || 'Seeded User'}</span>
+                          {ride.driverId && <span>Haydovchi: {ride.driverId.name}</span>}
+                        </div>
+                      </div>
+                    ))}
+                    {liveRides.length === 0 && (
+                      <p className="text-slate-500 text-center py-12 text-sm">
+                        Hozircha faol buyurtmalar yo'q
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Real Mapbox GL Map */}
+              <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg flex flex-col h-[600px]">
+                <h3 className="text-lg font-bold mb-4 flex items-center">
+                  <MapPin size={18} className="text-green-400 mr-2" /> Jonli Map (Mapbox)
+                </h3>
+                
+                <div className="flex-1 bg-slate-950 border border-slate-800 rounded-xl relative overflow-hidden">
+                  <div id="mapbox-admin-map" className="w-full h-full rounded-xl"></div>
+                </div>
+
+                <div className="flex space-x-6 mt-4 text-xs text-slate-500">
+                  <div className="flex items-center">
+                    <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full mr-2"></span>
+                    <span>Haydovchi (Bo'sh)</span>
+                  </div>
+                  <div className="flex items-center">
+                    <span className="w-2.5 h-2.5 bg-amber-400 rounded-full mr-2"></span>
+                    <span>Haydovchi (Band)</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'pricing' && (
+          <div className="space-y-8">
+            <div>
+              <h2 className="text-2xl font-bold tracking-tight">Tarif Sozlamalari</h2>
+              <p className="text-slate-400 text-sm">Tizim bo'yicha tariflar narxlarini boshqarish</p>
+            </div>
+
+            <div className="max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
+              <form onSubmit={handleUpdatePricing} className="space-y-6">
+                {/* Standart Tariff */}
+                <div className="border-b border-slate-800 pb-5">
+                  <h3 className="text-sm font-bold text-green-400 uppercase tracking-wider mb-3">
+                    🟢 Standart (Nexia 2)
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1.5">
+                        Boshlang'ich Narx (Base Fare) (UZS)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricing.tariffs?.standart?.baseFare || 5000}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          setPricing({
+                            ...pricing,
+                            tariffs: {
+                              ...pricing.tariffs,
+                              standart: { ...pricing.tariffs.standart, baseFare: val }
+                            }
+                          });
+                        }}
+                        className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1.5">
+                        Kilometr Narxi (UZS)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricing.tariffs?.standart?.pricePerKm || 1500}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          setPricing({
+                            ...pricing,
+                            tariffs: {
+                              ...pricing.tariffs,
+                              standart: { ...pricing.tariffs.standart, pricePerKm: val }
+                            }
+                          });
+                        }}
+                        className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Komfort Tariff */}
+                <div className="border-b border-slate-800 pb-5">
+                  <h3 className="text-sm font-bold text-yellow-400 uppercase tracking-wider mb-3">
+                    🟡 Komfort (Cobalt)
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1.5">
+                        Boshlang'ich Narx (Base Fare) (UZS)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricing.tariffs?.komfort?.baseFare || 7000}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          setPricing({
+                            ...pricing,
+                            tariffs: {
+                              ...pricing.tariffs,
+                              komfort: { ...pricing.tariffs.komfort, baseFare: val }
+                            }
+                          });
+                        }}
+                        className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1.5">
+                        Kilometr Narxi (UZS)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricing.tariffs?.komfort?.pricePerKm || 2000}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          setPricing({
+                            ...pricing,
+                            tariffs: {
+                              ...pricing.tariffs,
+                              komfort: { ...pricing.tariffs.komfort, pricePerKm: val }
+                            }
+                          });
+                        }}
+                        className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Biznes Tariff */}
+                <div className="border-b border-slate-800 pb-5">
+                  <h3 className="text-sm font-bold text-red-400 uppercase tracking-wider mb-3">
+                    🔴 Biznes (Malibu)
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1.5">
+                        Boshlang'ich Narx (Base Fare) (UZS)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricing.tariffs?.biznes?.baseFare || 10000}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          setPricing({
+                            ...pricing,
+                            tariffs: {
+                              ...pricing.tariffs,
+                              biznes: { ...pricing.tariffs.biznes, baseFare: val }
+                            }
+                          });
+                        }}
+                        className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1.5">
+                        Kilometr Narxi (UZS)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricing.tariffs?.biznes?.pricePerKm || 3000}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          setPricing({
+                            ...pricing,
+                            tariffs: {
+                              ...pricing.tariffs,
+                              biznes: { ...pricing.tariffs.biznes, pricePerKm: val }
+                            }
+                          });
+                        }}
+                        className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Surge Multiplier */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Tirbandlik Koeffitsiyenti (Surge Multiplier)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="1.0"
+                    value={pricing.surgeMultiplier || 1.0}
+                    onChange={(e) => setPricing({ ...pricing, surgeMultiplier: parseFloat(e.target.value) || 1.0 })}
+                    className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-3 rounded-xl transition duration-150 text-sm"
+                >
+                  {loading ? 'Saqlanmoqda...' : 'Tarif narxlarini saqlash'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'notifications' && (
+          <div className="space-y-8">
+            <div>
+              <h2 className="text-2xl font-bold tracking-tight">Push Xabarnomalar</h2>
+              <p className="text-slate-400 text-sm">Foydalanuvchilarga push bildirishnomalarni yuborish paneli</p>
+            </div>
+
+            <div className="max-w-xl bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
+              <form onSubmit={handleSendPush} className="space-y-6">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Kimga Yuboriladi (Recipient)
+                  </label>
+                  <select
+                    value={pushForm.recipientType}
+                    onChange={(e) => setPushForm({ ...pushForm, recipientType: e.target.value })}
+                    className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-3 px-4 focus:ring-1 focus:ring-green-400 focus:outline-none"
+                  >
+                    <option value="all">Barcha foydalanuvchilar (Hammasi)</option>
+                    <option value="users">Faqat Yo'lovchilar</option>
+                    <option value="drivers">Faqat Haydovchilar</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Sarlavha (Title)
+                  </label>
+                  <input
+                    type="text"
+                    value={pushForm.title}
+                    onChange={(e) => setPushForm({ ...pushForm, title: e.target.value })}
+                    className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-3 px-4 focus:ring-1 focus:ring-green-400 focus:outline-none"
+                    placeholder="Tezkor Xabar!"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Xabar matni (Body)
+                  </label>
+                  <textarea
+                    value={pushForm.body}
+                    onChange={(e) => setPushForm({ ...pushForm, body: e.target.value })}
+                    className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-3 px-4 focus:ring-1 focus:ring-green-400 focus:outline-none h-32"
+                    placeholder="Tizimda yangi tariflar joriy etildi."
+                    required
+                  />
+                </div>
+
+                {pushStatus && (
+                  <div className={`p-3 rounded-lg text-sm ${
+                    pushStatus.includes('Xatolik') ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'
+                  }`}>
+                    {pushStatus}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-3 rounded-xl transition duration-150 flex items-center justify-center"
+                >
+                  <Send size={16} className="mr-2" />
+                  {loading ? 'Yuborilmoqda...' : 'Push yuborish'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'rides' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Safarlar Tarixi</h2>
+                <p className="text-slate-400 text-sm">Barcha safarlar bo'yicha to'liq ma'lumotlar</p>
+              </div>
+              <div className="flex items-center space-x-3">
+                <span className="text-slate-500 text-sm">Jami: <b className="text-slate-200">{ridesList.length}</b> ta safar</span>
+                <button
+                  onClick={fetchRidesData}
+                  className="bg-slate-900 border border-slate-800 text-slate-300 py-2.5 px-4 rounded-xl hover:bg-slate-800 text-sm transition"
+                >
+                  Yangilash
+                </button>
+              </div>
+            </div>
+
+            {/* Status filter badges */}
+            <div className="flex flex-wrap gap-2">
+              {['all', 'completed', 'cancelled', 'searching', 'accepted', 'arriving', 'started'].map((st) => {
+                const count = st === 'all' ? ridesList.length : ridesList.filter(r => r.status === st).length;
+                const colors = {
+                  all: 'bg-slate-800 text-slate-200 border-slate-700',
+                  completed: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                  cancelled: 'bg-red-500/10 text-red-400 border-red-500/20',
+                  searching: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                  accepted: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+                  arriving: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+                  started: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+                };
+                const labels = { all: 'Hammasi', completed: 'Tugallangan', cancelled: 'Bekor qilingan', searching: 'Qidirilmoqda', accepted: 'Qabul qilingan', arriving: 'Kelyapti', started: 'Boshlangan' };
+                return (
+                  <span key={st} className={`text-[11px] font-bold uppercase tracking-wider py-1.5 px-3 rounded-lg border ${colors[st]}`}>
+                    {labels[st]} ({count})
+                  </span>
+                );
+              })}
+            </div>
+
+            {/* Rides list */}
+            <div className="space-y-3">
+              {ridesList.length === 0 && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center">
+                  <History size={40} className="text-slate-700 mx-auto mb-4" />
+                  <p className="text-slate-500 text-sm">Safarlar tarixi hali bo'sh</p>
+                </div>
+              )}
+
+              {ridesList.map((ride) => {
+                const isExpanded = expandedRide === ride._id;
+                const statusColors = {
+                  completed: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                  cancelled: 'bg-red-500/10 text-red-400 border-red-500/20',
+                  searching: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                  accepted: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+                  arriving: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+                  started: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+                };
+                const statusLabels = { completed: 'Tugallangan', cancelled: 'Bekor qilingan', searching: 'Qidirilmoqda', accepted: 'Qabul qilingan', arriving: 'Kelyapti', started: 'Boshlangan' };
+                const tariffColors = { standart: 'text-green-400', komfort: 'text-yellow-400', biznes: 'text-red-400' };
+                const tariffIcons = { standart: '🟢', komfort: '🟡', biznes: '🔴' };
+
+                return (
+                  <div
+                    key={ride._id}
+                    className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg transition-all duration-200 hover:border-slate-700"
+                  >
+                    {/* Collapsed header row */}
+                    <button
+                      onClick={() => setExpandedRide(isExpanded ? null : ride._id)}
+                      className="w-full flex items-center justify-between p-5 text-left hover:bg-slate-800/30 transition"
+                    >
+                      <div className="flex items-center space-x-4 flex-1 min-w-0">
+                        {/* Status badge */}
+                        <span className={`text-[10px] font-bold uppercase tracking-wider py-1 px-2.5 rounded border whitespace-nowrap ${statusColors[ride.status] || 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                          {statusLabels[ride.status] || ride.status}
+                        </span>
+
+                        {/* Route summary */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center space-x-2 text-sm">
+                            <span className="text-emerald-400">A</span>
+                            <span className="text-slate-300 truncate max-w-[200px]">{ride.pickup?.address || 'Noma\'lum'}</span>
+                            <span className="text-slate-600">→</span>
+                            <span className="text-red-400">B</span>
+                            <span className="text-slate-300 truncate max-w-[200px]">{ride.destination?.address || 'Noma\'lum'}</span>
+                          </div>
+                        </div>
+
+                        {/* Price */}
+                        <span className="text-green-400 font-bold text-sm whitespace-nowrap">
+                          {ride.price?.toLocaleString()} UZS
+                        </span>
+
+                        {/* Tariff */}
+                        <span className={`text-xs font-semibold capitalize whitespace-nowrap ${tariffColors[ride.tariff] || 'text-slate-400'}`}>
+                          {tariffIcons[ride.tariff] || ''} {ride.tariff}
+                        </span>
+
+                        {/* Date */}
+                        <span className="text-slate-500 text-xs whitespace-nowrap">
+                          {new Date(ride.createdAt).toLocaleDateString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                        </span>
+                      </div>
+
+                      {isExpanded ? <ChevronUp size={18} className="text-slate-500 ml-3 shrink-0" /> : <ChevronDown size={18} className="text-slate-500 ml-3 shrink-0" />}
+                    </button>
+
+                    {/* Expanded details */}
+                    {isExpanded && (
+                      <div className="border-t border-slate-800 p-6 bg-slate-950/50 space-y-6">
+                        {/* Route details */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="space-y-4">
+                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center">
+                              <Route size={14} className="mr-2 text-green-400" />
+                              Marshrut Ma'lumotlari
+                            </h4>
+                            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                              <div>
+                                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">A — Jo'nash nuqtasi</span>
+                                <p className="text-slate-200 text-sm mt-1">{ride.pickup?.address || 'Noma\'lum'}</p>
+                                <p className="text-slate-600 text-[10px] font-mono mt-0.5">
+                                  {ride.pickup?.lat?.toFixed(6)}, {ride.pickup?.lng?.toFixed(6)}
+                                </p>
+                              </div>
+                              <div className="border-t border-slate-800 pt-3">
+                                <span className="text-[10px] font-bold text-red-400 uppercase tracking-wider">B — Borish nuqtasi</span>
+                                <p className="text-slate-200 text-sm mt-1">{ride.destination?.address || 'Noma\'lum'}</p>
+                                <p className="text-slate-600 text-[10px] font-mono mt-0.5">
+                                  {ride.destination?.lat?.toFixed(6)}, {ride.destination?.lng?.toFixed(6)}
+                                </p>
+                              </div>
+                              <div className="border-t border-slate-800 pt-3 flex items-center justify-between">
+                                <span className="text-slate-500 text-xs">Masofa:</span>
+                                <span className="text-slate-200 font-bold text-sm">{ride.distance?.toFixed(1)} km</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* People & Contact */}
+                          <div className="space-y-4">
+                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center">
+                              <Phone size={14} className="mr-2 text-green-400" />
+                              Ishtirokchilar
+                            </h4>
+                            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                              {/* User info */}
+                              <div>
+                                <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">👤 Yo'lovchi</span>
+                                <div className="flex items-center justify-between mt-1.5">
+                                  <p className="text-slate-200 text-sm font-semibold">
+                                    {ride.userId?.name || 'Noma\'lum'} {ride.userId?.surname || ''}
+                                  </p>
+                                  <a href={`tel:${ride.userId?.phone}`} className="text-green-400 text-xs font-mono bg-green-500/10 py-1 px-2 rounded border border-green-500/20 hover:bg-green-500/20 transition">
+                                    📞 {ride.userId?.phone || 'Raqam yo\'q'}
+                                  </a>
+                                </div>
+                              </div>
+
+                              <div className="border-t border-slate-800 pt-3">
+                                <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">🚘 Haydovchi</span>
+                                {ride.driverId ? (
+                                  <div className="mt-1.5">
+                                    <div className="flex items-center justify-between">
+                                      <p className="text-slate-200 text-sm font-semibold">
+                                        {ride.driverId.name} {ride.driverId.surname}
+                                      </p>
+                                      <a href={`tel:${ride.driverId.phone}`} className="text-green-400 text-xs font-mono bg-green-500/10 py-1 px-2 rounded border border-green-500/20 hover:bg-green-500/20 transition">
+                                        📞 {ride.driverId.phone}
+                                      </a>
+                                    </div>
+                                    {ride.driverId.carInfo && (
+                                      <p className="text-slate-500 text-xs mt-1">
+                                        🚗 {ride.driverId.carInfo.color} {ride.driverId.carInfo.make} {ride.driverId.carInfo.model} — <span className="font-mono">{ride.driverId.carInfo.plateNumber}</span>
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <p className="text-slate-500 text-xs mt-1">Haydovchi tayinlanmagan</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Financial + Status + Timestamps */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          {/* Financial */}
+                          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-3">💰 Moliyaviy</span>
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-500 text-xs">Narx:</span>
+                                <span className="text-green-400 font-bold">{ride.price?.toLocaleString()} UZS</span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-500 text-xs">Tarif:</span>
+                                <span className={`font-semibold text-sm capitalize ${tariffColors[ride.tariff] || 'text-slate-300'}`}>
+                                  {tariffIcons[ride.tariff]} {ride.tariff}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-500 text-xs">Masofa:</span>
+                                <span className="text-slate-200 text-sm">{ride.distance?.toFixed(1)} km</span>
+                              </div>
+                              {ride.rating > 0 && (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-slate-500 text-xs">Baho:</span>
+                                  <span className="text-amber-400 text-sm">⭐️ {ride.rating}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Options */}
+                          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-3">⚙️ Parametrlar</span>
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-500 text-xs">Konditsioner:</span>
+                                <span className={`text-xs font-semibold ${ride.options?.ac ? 'text-green-400' : 'text-slate-600'}`}>
+                                  {ride.options?.ac ? '✅ Ha' : '❌ Yo\'q'}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-500 text-xs">Yuk (Bagaj):</span>
+                                <span className={`text-xs font-semibold ${ride.options?.luggage ? 'text-green-400' : 'text-slate-600'}`}>
+                                  {ride.options?.luggage ? '✅ Ha' : '❌ Yo\'q'}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-500 text-xs">Holat:</span>
+                                <span className={`text-[10px] font-bold uppercase tracking-wider py-0.5 px-2 rounded border ${statusColors[ride.status] || 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                                  {statusLabels[ride.status] || ride.status}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Timestamps */}
+                          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-3 flex items-center">
+                              <Clock size={12} className="mr-1.5" /> Vaqt Jadvali
+                            </span>
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-500 text-xs">Yaratilgan:</span>
+                                <span className="text-slate-300 text-xs font-mono">
+                                  {new Date(ride.createdAt).toLocaleString('uz-UZ')}
+                                </span>
+                              </div>
+                              {ride.acceptedAt && (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-slate-500 text-xs">Qabul qilingan:</span>
+                                  <span className="text-slate-300 text-xs font-mono">
+                                    {new Date(ride.acceptedAt).toLocaleString('uz-UZ')}
+                                  </span>
+                                </div>
+                              )}
+                              {ride.startedAt && (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-slate-500 text-xs">Boshlangan:</span>
+                                  <span className="text-slate-300 text-xs font-mono">
+                                    {new Date(ride.startedAt).toLocaleString('uz-UZ')}
+                                  </span>
+                                </div>
+                              )}
+                              {ride.completedAt && (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-slate-500 text-xs">Tugallangan:</span>
+                                  <span className="text-emerald-400 text-xs font-mono">
+                                    {new Date(ride.completedAt).toLocaleString('uz-UZ')}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Ride ID */}
+                        <div className="text-right">
+                          <span className="text-slate-600 text-[10px] font-mono">ID: {ride._id}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'finance' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Moliya boshqaruvi</h2>
+                <p className="text-slate-400 text-sm">Butun platforma moliya operatsiyalari, komissiyalar, qarzlar va pul yechishlar</p>
+              </div>
+              <button
+                onClick={() => {
+                  if (financeSubTab === 'taxi') {
+                    fetchCommissionStats();
+                    fetchDriversDebts(debtPage, debtSearch, debtSortBy);
+                  } else {
+                    fetchEatsFinanceData();
+                  }
+                }}
+                className="bg-slate-900 border border-slate-800 text-slate-300 py-2.5 px-4 rounded-xl hover:bg-slate-800 text-sm transition"
+              >
+                Yangilash
+              </button>
+            </div>
+
+            {/* Sub-tab segment pills */}
+            <div className="flex space-x-2 bg-slate-900 p-1.5 rounded-2xl border border-slate-800 w-max">
+              <button
+                onClick={() => setFinanceSubTab('taxi')}
+                className={`px-5 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 ${
+                  financeSubTab === 'taxi'
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <span>🚖 Taksi Haydovchilari</span>
+              </button>
+              <button
+                onClick={() => setFinanceSubTab('eats_overview')}
+                className={`px-5 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 ${
+                  financeSubTab === 'eats_overview'
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <span>🏪 Eats Hamyonlari</span>
+              </button>
+              <button
+                onClick={() => setFinanceSubTab('eats_withdrawals')}
+                className={`px-5 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 ${
+                  financeSubTab === 'eats_withdrawals'
+                    ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                    : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                }`}
+              >
+                <span>🏧 Eats Pul Chiqarish</span>
+              </button>
+            </div>
+
+            {/* Sub-tab view rendering */}
+            {financeSubTab === 'taxi' && (
+              <div className="space-y-8">
+                {/* Stats grid */}
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+                  <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Jami Komissiya</p>
+                    <h3 className="text-2xl font-bold text-green-400">{commissionStats.totalCommissionEarned?.toLocaleString() || 0} <span className="text-xs font-normal">UZS</span></h3>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Faol Qarzlar</p>
+                    <h3 className="text-2xl font-bold text-red-400">{commissionStats.totalOutstandingDebt?.toLocaleString() || 0} <span className="text-xs font-normal">UZS</span></h3>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">To'langan Qarzlar</p>
+                    <h3 className="text-2xl font-bold text-blue-400">{commissionStats.totalPaidDebt?.toLocaleString() || 0} <span className="text-xs font-normal">UZS</span></h3>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Bloklanganlar</p>
+                    <h3 className="text-2xl font-bold text-amber-500">{commissionStats.blockedDrivers || 0} <span className="text-xs font-normal">haydovchi</span></h3>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Ogohlantirishda</p>
+                    <h3 className="text-2xl font-bold text-yellow-400">{commissionStats.warningDrivers || 0} <span className="text-xs font-normal">haydovchi</span></h3>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-lg overflow-hidden p-6 space-y-6">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="relative flex-1 max-w-md">
+                      <Search className="absolute left-3.5 top-3.5 text-slate-500" size={18} />
+                      <input
+                        type="text"
+                        value={debtSearch}
+                        onChange={(e) => { setDebtSearch(e.target.value); fetchDriversDebts(1, e.target.value, debtSortBy); }}
+                        className="w-full bg-slate-950 text-slate-100 placeholder-slate-700 border border-slate-800 rounded-xl py-2.5 pl-11 pr-4 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                        placeholder="Qidiruv: Haydovchi nomi yoki telefon..."
+                      />
+                    </div>
+                    <div className="flex items-center space-x-3">
+                      <span className="text-xs text-slate-400 font-medium">Qarz bo'yicha:</span>
+                      <button
+                        type="button"
+                        onClick={() => { const n = debtSortBy === 'desc' ? 'asc' : 'desc'; setDebtSortBy(n); fetchDriversDebts(1, debtSearch, n); }}
+                        className="flex items-center space-x-2 bg-slate-950 border border-slate-800 text-slate-300 py-2 px-4 rounded-xl hover:bg-slate-900 text-xs font-medium transition"
+                      >
+                        <ArrowUpDown size={14} />
+                        <span>{debtSortBy === 'desc' ? "Ko'pdan kamga" : "Kamdan ko'pga"}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase tracking-wider">
+                          <th className="pb-4 font-semibold">Haydovchi</th>
+                          <th className="pb-4 font-semibold">Telefon</th>
+                          <th className="pb-4 font-semibold text-right">Balans</th>
+                          <th className="pb-4 font-semibold text-right">Jami Komissiya</th>
+                          <th className="pb-4 font-semibold text-center">Holat</th>
+                          <th className="pb-4 font-semibold text-right">Amal</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {debtDriversList.map((driver) => (
+                          <tr key={driver._id} className="border-b border-slate-800 hover:bg-slate-800/20 transition">
+                            <td className="py-4 font-semibold text-slate-200">{driver.name} {driver.surname}</td>
+                            <td className="py-4 text-slate-400 font-mono">{driver.phone}</td>
+                            <td className={`py-4 text-right font-bold font-mono ${(driver.balance || 0) < 0 ? 'text-red-400' : 'text-green-400'}`}>{(driver.balance || 0).toLocaleString()} UZS</td>
+                            <td className="py-4 text-right font-mono text-slate-300">{driver.totalCommission?.toLocaleString() || 0} UZS</td>
+                            <td className="py-4 text-center">
+                              <span className={`inline-block py-1 px-3 rounded-full text-xs font-extrabold tracking-wide ${
+                                driver.status === 'BLOCKED' ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                : driver.status === 'WARNING' ? 'bg-yellow-400/10 text-yellow-400 border border-yellow-400/20'
+                                : 'bg-green-500/10 text-green-400 border border-green-500/20'
+                              }`}>{driver.status}</span>
+                            </td>
+                            <td className="py-4 text-right">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBalanceModal(driver);
+                                  setBalanceAdjAmount('');
+                                  setBalanceAdjNote('');
+                                }}
+                                className="bg-green-500/10 text-green-400 border border-green-500/20 py-1.5 px-3 rounded-lg text-xs font-semibold hover:bg-green-500/20 transition"
+                              >
+                                Balans
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {debtDriversList.length === 0 && (
+                          <tr><td colSpan="6" className="py-8 text-center text-slate-500">Haydovchilar topilmadi.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {debtTotalPages > 1 && (
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-800 text-xs text-slate-400">
+                      <span>Jami: {debtTotal} ta haydovchi</span>
+                      <div className="flex space-x-2">
+                        <button type="button" disabled={debtPage === 1} onClick={() => fetchDriversDebts(debtPage - 1, debtSearch, debtSortBy)} className="bg-slate-950 border border-slate-800 py-1.5 px-3 rounded-lg hover:bg-slate-900 disabled:opacity-50 transition">Oldingi</button>
+                        <span className="py-1.5 px-3 font-semibold text-slate-300">{debtPage} / {debtTotalPages}</span>
+                        <button type="button" disabled={debtPage === debtTotalPages} onClick={() => fetchDriversDebts(debtPage + 1, debtSearch, debtSortBy)} className="bg-slate-950 border border-slate-800 py-1.5 px-3 rounded-lg hover:bg-slate-900 disabled:opacity-50 transition">Keyingi</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {financeSubTab === 'eats_overview' && (
+              <div className="space-y-8">
+                {eatsFinanceLoading && !eatsWalletOverview ? (
+                  <div className="flex justify-center items-center py-12">
+                    <Loader2 className="animate-spin text-green-400" size={32} />
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+                    <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Platforma Balansi (Servis haqi)</p>
+                      <h3 className="text-2xl font-bold text-green-400">
+                        {(eatsWalletOverview?.infastBalance || 0).toLocaleString()} <span className="text-xs font-normal">UZS</span>
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-1">Jami topilgan: {(eatsWalletOverview?.infastTotalEarned || 0).toLocaleString()} UZS</p>
+                    </div>
+                    <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Jami Restoran Balansi</p>
+                      <h3 className="text-2xl font-bold text-slate-100">
+                        {(eatsWalletOverview?.totalRestaurantBalance || 0).toLocaleString()} <span className="text-xs font-normal">UZS</span>
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-1">Jami topilgan: {(eatsWalletOverview?.totalRestaurantEarned || 0).toLocaleString()} UZS</p>
+                    </div>
+                    <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Jami Kurer Balansi</p>
+                      <h3 className="text-2xl font-bold text-slate-100">
+                        {(eatsWalletOverview?.totalCourierBalance || 0).toLocaleString()} <span className="text-xs font-normal">UZS</span>
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-1">Jami topilgan: {(eatsWalletOverview?.totalCourierEarned || 0).toLocaleString()} UZS</p>
+                    </div>
+                    <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Jami Kurer Naqd Qarzi</p>
+                      <h3 className="text-2xl font-bold text-amber-500">
+                        {(eatsWalletOverview?.totalCourierCashDebt || 0).toLocaleString()} <span className="text-xs font-normal">UZS</span>
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-1">Mijozlardan yig'ilgan</p>
+                    </div>
+                    <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-lg">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Kutilayotgan Chiqarishlar</p>
+                      <h3 className="text-2xl font-bold text-red-400">
+                        {(eatsWalletOverview?.pendingWithdrawalTotal || 0).toLocaleString()} <span className="text-xs font-normal">UZS</span>
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-1">{eatsWalletOverview?.pendingWithdrawalsCount || 0} ta so'rov</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {financeSubTab === 'eats_withdrawals' && (
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-lg p-6 space-y-6">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-lg font-bold text-slate-100">Pul Chiqarish So'rovlari</h3>
+                  <div className="flex space-x-2 bg-slate-950 p-1 rounded-xl border border-slate-850">
+                    {[
+                      { id: '', label: 'Hammasi' },
+                      { id: 'pending', label: 'Kutilmoqda' },
+                      { id: 'approved', label: 'Tasdiqlangan' },
+                      { id: 'rejected', label: 'Rad etilgan' },
+                      { id: 'completed', label: 'Bajarilgan' }
+                    ].map(filter => (
+                      <button
+                        key={filter.id}
+                        onClick={() => setEatsWithdrawalFilter(filter.id)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                          eatsWithdrawalFilter === filter.id
+                            ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                            : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                        }`}
+                      >
+                        {filter.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {eatsFinanceLoading && eatsWithdrawals.length === 0 ? (
+                  <div className="flex justify-center items-center py-12">
+                    <Loader2 className="animate-spin text-green-400" size={24} />
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase tracking-wider bg-slate-900/50">
+                          <th className="py-3 px-4 font-semibold">Turi / Kim</th>
+                          <th className="py-3 px-4 font-semibold">Summa</th>
+                          <th className="py-3 px-4 font-semibold">Karta raqami</th>
+                          <th className="py-3 px-4 font-semibold">To'lov usuli</th>
+                          <th className="py-3 px-4 font-semibold">Holat</th>
+                          <th className="py-3 px-4 font-semibold">Sana</th>
+                          <th className="py-3 px-4 font-semibold text-right">Amal</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800">
+                        {eatsWithdrawals.map(w => {
+                          const statusColors = {
+                            pending: 'bg-yellow-400/10 text-yellow-400 border-yellow-400/20',
+                            approved: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                            rejected: 'bg-red-500/10 text-red-400 border-red-500/20',
+                            completed: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                          };
+                          const statusLabels = {
+                            pending: 'Kutilmoqda',
+                            approved: 'Tasdiqlandi',
+                            rejected: 'Rad etildi',
+                            completed: 'Bajarildi',
+                          };
+                          return (
+                            <tr key={w._id} className="hover:bg-slate-800/20 transition">
+                              <td className="py-4 px-4">
+                                <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded mr-2 ${
+                                  w.ownerType === 'restaurant' ? 'bg-indigo-500/10 text-indigo-400' : 'bg-orange-500/10 text-orange-400'
+                                }`}>
+                                  {w.ownerType === 'restaurant' ? 'Restoran' : 'Kurer'}
+                                </span>
+                                <span className="font-semibold text-slate-200">
+                                  {w.ownerType === 'restaurant'
+                                    ? (eatsRestaurants.find(r => r._id === w.ownerId)?.name || 'Restoran')
+                                    : (eatsCouriers.find(c => c._id === w.ownerId)?.name || 'Kurer')}
+                                </span>
+                              </td>
+                              <td className="py-4 px-4 font-bold text-green-400 font-mono">
+                                {w.amount?.toLocaleString()} UZS
+                              </td>
+                              <td className="py-4 px-4 text-slate-300 font-mono">
+                                {w.cardNumber}
+                              </td>
+                              <td className="py-4 px-4 text-slate-400 capitalize">
+                                {w.paymentMethod}
+                              </td>
+                              <td className="py-4 px-4">
+                                <span className={`inline-block py-1 px-2.5 rounded border text-xs font-semibold ${statusColors[w.status] || 'bg-slate-800 text-slate-400'}`}>
+                                  {statusLabels[w.status] || w.status}
+                                </span>
+                                {w.adminNote && (
+                                  <p className="text-[10px] text-slate-500 italic mt-1">Izoh: {w.adminNote}</p>
+                                )}
+                              </td>
+                              <td className="py-4 px-4 text-slate-500 text-xs">
+                                {w.createdAt ? new Date(w.createdAt).toLocaleString('uz-UZ') : ''}
+                              </td>
+                              <td className="py-4 px-4 text-right">
+                                {w.status === 'pending' ? (
+                                  processingWithdrawalId === w._id ? (
+                                    <div className="flex flex-col space-y-2 p-3 bg-slate-950 rounded-xl border border-slate-800 text-left max-w-xs ml-auto">
+                                      <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Admin Izohi</label>
+                                      <input
+                                        type="text"
+                                        placeholder="Masalan: Karta raqamiga o'tkazildi"
+                                        value={eatsAdminNote}
+                                        onChange={(e) => setEatsAdminNote(e.target.value)}
+                                        className="bg-slate-900 border border-slate-800 text-slate-100 rounded-lg p-2 text-xs focus:ring-1 focus:ring-green-400 focus:outline-none"
+                                      />
+                                      <div className="flex space-x-1.5">
+                                        <button
+                                          onClick={() => handleUpdateEatsWithdrawal(w._id, 'approved')}
+                                          className="bg-emerald-400 hover:bg-emerald-500 text-slate-950 font-bold px-2.5 py-1 rounded text-[11px] transition"
+                                        >
+                                          Tasdiqlash
+                                        </button>
+                                        <button
+                                          onClick={() => handleUpdateEatsWithdrawal(w._id, 'rejected')}
+                                          className="bg-red-500 hover:bg-red-600 text-slate-950 font-bold px-2.5 py-1 rounded text-[11px] transition"
+                                        >
+                                          Rad etish
+                                        </button>
+                                        <button
+                                          onClick={() => setProcessingWithdrawalId(null)}
+                                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded text-[11px] transition"
+                                        >
+                                          Yopish
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() => {
+                                        setProcessingWithdrawalId(w._id);
+                                        setEatsAdminNote('');
+                                      }}
+                                      className="bg-green-500/10 text-green-400 border border-green-500/20 py-1.5 px-3 rounded-lg text-xs font-semibold hover:bg-green-500/20 transition"
+                                    >
+                                      Boshqarish
+                                    </button>
+                                  )
+                                ) : (
+                                  <span className="text-slate-600 text-xs">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {eatsWithdrawals.length === 0 && (
+                          <tr>
+                            <td colSpan="7" className="py-8 text-center text-slate-500">Chiqarish so'rovlari topilmadi.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Balance Adjustment Modal */}
+        {balanceModal && (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+              <h3 className="text-lg font-bold mb-1">{balanceModal.name} {balanceModal.surname}</h3>
+              <p className="text-slate-400 text-sm mb-1">Joriy balans: <span className={`font-bold ${(balanceModal.balance || 0) < 0 ? 'text-red-400' : 'text-green-400'}`}>{(balanceModal.balance || 0).toLocaleString()} UZS</span></p>
+              <p className="text-slate-500 text-xs mb-5">Balansni to'ldirish uchun musbat (+), ayirish uchun manfiy (-) raqam kiriting.</p>
+              <form onSubmit={handleAdjustBalance} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Summa (UZS)</label>
+                  <div className="flex gap-2 mb-2">
+                    <button type="button" onClick={() => setBalanceAdjAmount(String(-(balanceModal.balance || 0)))} className="text-xs bg-green-500/10 text-green-400 border border-green-500/20 px-3 py-1.5 rounded-lg hover:bg-green-500/20 transition">Qarzni to'liq yopish</button>
+                    <button type="button" onClick={() => setBalanceAdjAmount('0')} className="text-xs bg-slate-800 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-700 transition">Nol qilish</button>
+                  </div>
+                  <input
+                    type="number"
+                    value={balanceAdjAmount}
+                    onChange={(e) => setBalanceAdjAmount(e.target.value)}
+                    placeholder="Masalan: 50000 yoki -10000"
+                    className="w-full bg-slate-950 text-slate-100 border border-slate-700 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Izoh (ixtiyoriy)</label>
+                  <input
+                    type="text"
+                    value={balanceAdjNote}
+                    onChange={(e) => setBalanceAdjNote(e.target.value)}
+                    placeholder="Masalan: Naqd to'lov qabul qilindi"
+                    className="w-full bg-slate-950 text-slate-100 border border-slate-700 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm"
+                  />
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setBalanceModal(null)} className="flex-1 bg-slate-800 text-slate-300 py-2.5 rounded-xl text-sm font-semibold hover:bg-slate-700 transition">Bekor qilish</button>
+                  <button type="submit" disabled={balanceAdjLoading} className="flex-1 bg-green-400 hover:bg-green-500 text-slate-950 py-2.5 rounded-xl text-sm font-bold transition flex items-center justify-center">
+                    {balanceAdjLoading ? <Loader2 className="animate-spin" size={18} /> : 'Saqlash'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'system_settings' && (
+          <div className="space-y-8">
+            <div>
+              <h2 className="text-2xl font-bold tracking-tight">Tizim Sozlamalari</h2>
+              <p className="text-slate-400 text-sm">Komissiya foizlari va qarzdorlik limitlarini boshqarish</p>
+            </div>
+            <div className="max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
+              <form onSubmit={handleUpdateSettings} className="space-y-6">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Komissiya Foizi (%)</label>
+                  <div className="flex items-center space-x-4">
+                    <input
+                      type="range" min="0" max="100"
+                      value={settings.commissionPercent}
+                      onChange={(e) => setSettings({ ...settings, commissionPercent: parseInt(e.target.value) || 0 })}
+                      className="w-full accent-green-400"
+                    />
+                    <span className="text-lg font-bold text-green-400 w-12 text-right">{settings.commissionPercent}%</span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Ogohlantirish Limiti (UZS)</label>
+                    <input type="number" min="0" value={settings.warningDebtLimit}
+                      onChange={(e) => setSettings({ ...settings, warningDebtLimit: parseInt(e.target.value) || 0 })}
+                      className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm" required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Bloklash Limiti (UZS)</label>
+                    <input type="number" min="0" value={settings.blockDebtLimit}
+                      onChange={(e) => setSettings({ ...settings, blockDebtLimit: parseInt(e.target.value) || 0 })}
+                      className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-xl py-2.5 px-3.5 focus:ring-1 focus:ring-green-400 focus:outline-none text-sm" required
+                    />
+                  </div>
+                </div>
+                <button type="submit" disabled={loading}
+                  className="w-full bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-3 rounded-xl transition duration-150 text-sm flex items-center justify-center"
+                >
+                  {loading ? <Loader2 className="animate-spin mr-2" size={18} /> : 'Sozlamalarni saqlash'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+        {activeTab === 'eats_restaurants' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Eats Restoranlar</h2>
+                <p className="text-slate-400 text-sm">Restoranlarni ro'yxatga olish va boshqarish paneli</p>
+              </div>
+              <button
+                onClick={() => { setEditingRestaurant(null); setNewRestaurant({ name: '', category: 'Fast Food', phone: '+998', address: '', latitude: 41.311081, longitude: 69.240562, login: '', password: '' }); setRestaurantModal(true); }}
+                className="bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-sm flex items-center transition"
+              >
+                <Plus size={18} className="mr-1.5" /> Restoran Qo'shish
+              </button>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-800 text-xs font-bold text-slate-400 uppercase bg-slate-900/50">
+                    <th className="py-4 px-6">Nomi</th>
+                    <th className="py-4 px-6">Kategoriya</th>
+                    <th className="py-4 px-6">Telefon</th>
+                    <th className="py-4 px-6">Manzil</th>
+                    <th className="py-4 px-6">Holat</th>
+                    <th className="py-4 px-6 text-right">Amal</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-sm">
+                  {eatsRestaurants.map((res) => (
+                    <tr key={res._id} className="hover:bg-slate-800/20">
+                      <td className="py-4 px-6 font-semibold text-slate-100">{res.name}</td>
+                      <td className="py-4 px-6 text-slate-300">{res.category}</td>
+                      <td className="py-4 px-6 text-slate-400">{res.phone}</td>
+                      <td className="py-4 px-6 text-slate-400">{res.address}</td>
+                      <td className="py-4 px-6">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${res.isActive ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+                          {res.isActive ? 'Faol' : 'Faolsiz'}
+                        </span>
+                      </td>
+                      <td className="py-4 px-6 text-right space-x-2">
+                        <button
+                          onClick={() => handleToggleEatsRestaurant(res._id)}
+                          className={`py-1 px-2.5 rounded text-xs font-semibold ${res.isActive ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'bg-green-500/10 text-green-400 hover:bg-green-500/20'}`}
+                        >
+                          {res.isActive ? 'O\'chirish' : 'Yoqish'}
+                        </button>
+                        <button
+                          onClick={() => { setEditingRestaurant(res); setNewRestaurant({ name: res.name, category: res.category, phone: res.phone, address: res.address, latitude: res.location?.coordinates[1] || 41.311081, longitude: res.location?.coordinates[0] || 69.240562, login: res.login || '', password: res.password || '' }); setRestaurantModal(true); }}
+                          className="bg-slate-800 text-slate-200 py-1 px-2.5 rounded text-xs font-semibold"
+                        >
+                          Tahrirlash
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {eatsRestaurants.length === 0 && (
+                    <tr>
+                      <td colSpan="6" className="py-8 text-center text-slate-500">Restoranlar topilmadi.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Restaurant Modal */}
+            {restaurantModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl">
+                  <h3 className="text-xl font-bold mb-4">{editingRestaurant ? 'Restoranni Tahrirlash' : 'Yangi Restoran Qo\'shish'}</h3>
+                  <form onSubmit={handleCreateRestaurant} className="space-y-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Restoran Nomi</label>
+                      <input
+                        type="text" required
+                        value={newRestaurant.name}
+                        onChange={(e) => setNewRestaurant({ ...newRestaurant, name: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        placeholder="Yalpiz Milliy Taomlar"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Kategoriya</label>
+                        <select
+                          value={newRestaurant.category}
+                          onChange={(e) => setNewRestaurant({ ...newRestaurant, category: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        >
+                          <option value="Fast Food">Fast Food</option>
+                          <option value="Milliy Taomlar">Milliy Taomlar</option>
+                          <option value="Pitsa & Burger">Pitsa & Burger</option>
+                          <option value="Shirinliklar">Shirinliklar</option>
+                          <option value="Drinks">Drinks</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Telefon</label>
+                        <input
+                          type="text" required
+                          value={newRestaurant.phone}
+                          onChange={(e) => setNewRestaurant({ ...newRestaurant, phone: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Manzil (Matn)</label>
+                      <input
+                        type="text" required
+                        value={newRestaurant.address}
+                        onChange={(e) => setNewRestaurant({ ...newRestaurant, address: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        placeholder="Amir Temur ko'chasi, 12-uy"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Kenglik (Latitude)</label>
+                        <input
+                          type="number" step="0.000001" required
+                          value={newRestaurant.latitude}
+                          onChange={(e) => setNewRestaurant({ ...newRestaurant, latitude: parseFloat(e.target.value) || 0 })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Uzunlik (Longitude)</label>
+                        <input
+                          type="number" step="0.000001" required
+                          value={newRestaurant.longitude}
+                          onChange={(e) => setNewRestaurant({ ...newRestaurant, longitude: parseFloat(e.target.value) || 0 })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Restoran Logini (Kirish uchun)</label>
+                        <input
+                          type="text" required
+                          value={newRestaurant.login}
+                          onChange={(e) => setNewRestaurant({ ...newRestaurant, login: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                          placeholder="yalpiz_login"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Parol</label>
+                        <input
+                          type="password" required={!editingRestaurant}
+                          value={newRestaurant.password}
+                          onChange={(e) => setNewRestaurant({ ...newRestaurant, password: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                          placeholder="••••••••"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex justify-end space-x-3 pt-4 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setRestaurantModal(false)}
+                        className="bg-slate-800 text-slate-200 py-2 px-4 rounded-xl text-sm"
+                      >
+                        Bekor qilish
+                      </button>
+                      <button
+                        type="submit" disabled={loading}
+                        className="bg-green-400 text-slate-950 font-bold py-2 px-5 rounded-xl text-sm"
+                      >
+                        {loading ? 'Saqlanmoqda...' : 'Saqlash'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'eats_couriers' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Eats Kurerlar</h2>
+                <p className="text-slate-400 text-sm">Oziq-ovqat yetkazuvchi kurerlarni boshqarish paneli</p>
+              </div>
+              <button
+                onClick={() => { setEditingEatsCourier(null); setNewEatsCourier({ name: '', phone: '+998', vehicleType: 'scooter' }); setEatsCourierModal(true); }}
+                className="bg-green-400 hover:bg-green-500 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-sm flex items-center transition"
+              >
+                <Plus size={18} className="mr-1.5" /> Kurer Qo'shish
+              </button>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-800 text-xs font-bold text-slate-400 uppercase bg-slate-900/50">
+                    <th className="py-4 px-6">Ismi</th>
+                    <th className="py-4 px-6">Telefon</th>
+                    <th className="py-4 px-6">Ulov turi</th>
+                    <th className="py-4 px-6">Balans</th>
+                    <th className="py-4 px-6">Reyting</th>
+                    <th className="py-4 px-6">Holat</th>
+                    <th className="py-4 px-6 text-right">Amal</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-sm">
+                  {eatsCouriers.map((courier) => (
+                    <tr key={courier._id} className="hover:bg-slate-800/20">
+                      <td className="py-4 px-6 font-semibold text-slate-100">{courier.name}</td>
+                      <td className="py-4 px-6 text-slate-300">{courier.phone}</td>
+                      <td className="py-4 px-6 text-slate-400 capitalize">{courier.vehicleType}</td>
+                      <td className="py-4 px-6 font-bold text-green-400">{(courier.balance || 0).toLocaleString()} UZS</td>
+                      <td className="py-4 px-6">⭐ {courier.rating?.toFixed(1) || '5.0'}</td>
+                      <td className="py-4 px-6">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded text-xs font-bold ${courier.online ? 'bg-green-500/10 text-green-400' : 'bg-slate-800 text-slate-500'}`}>
+                          {courier.online ? 'Online' : 'Offline'}
+                        </span>
+                      </td>
+                      <td className="py-4 px-6 text-right">
+                        <button
+                          onClick={() => { setEditingEatsCourier(courier); setNewEatsCourier({ name: courier.name, phone: courier.phone, vehicleType: courier.vehicleType }); setEatsCourierModal(true); }}
+                          className="bg-slate-800 text-slate-200 py-1 px-2.5 rounded text-xs font-semibold"
+                        >
+                          Tahrirlash
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {eatsCouriers.length === 0 && (
+                    <tr>
+                      <td colSpan="7" className="py-8 text-center text-slate-500">Kurerlar topilmadi.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Courier Modal */}
+            {eatsCourierModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl">
+                  <h3 className="text-xl font-bold mb-4">{editingEatsCourier ? 'Kurerni Tahrirlash' : 'Yangi Kurer Qo\'shish'}</h3>
+                  <form onSubmit={handleCreateEatsCourier} className="space-y-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">To'liq ismi</label>
+                      <input
+                        type="text" required
+                        value={newEatsCourier.name}
+                        onChange={(e) => setNewEatsCourier({ ...newEatsCourier, name: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        placeholder="Jasur Alimov"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Telefon</label>
+                        <input
+                          type="text" required
+                          value={newEatsCourier.phone}
+                          onChange={(e) => setNewEatsCourier({ ...newEatsCourier, phone: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-400 mb-1">Ulov Turi</label>
+                        <select
+                          value={newEatsCourier.vehicleType}
+                          onChange={(e) => setNewEatsCourier({ ...newEatsCourier, vehicleType: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 focus:outline-none focus:ring-1 focus:ring-green-400 text-sm"
+                        >
+                          <option value="walking">Piyoda (Walking)</option>
+                          <option value="bicycle">Velosiped (Bicycle)</option>
+                          <option value="scooter">Skuter (Scooter)</option>
+                          <option value="car">Avtomobil (Car)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex justify-end space-x-3 pt-4 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setEatsCourierModal(false)}
+                        className="bg-slate-800 text-slate-200 py-2 px-4 rounded-xl text-sm"
+                      >
+                        Bekor qilish
+                      </button>
+                      <button
+                        type="submit" disabled={loading}
+                        className="bg-green-400 text-slate-950 font-bold py-2 px-5 rounded-xl text-sm"
+                      >
+                        {loading ? 'Saqlanmoqda...' : 'Saqlash'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'eats_orders' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Eats Buyurtmalar</h2>
+                <p className="text-slate-400 text-sm">Super ilova orqali berilgan barcha taom buyurtmalari ro'yxati</p>
+              </div>
+              <button
+                onClick={fetchEatsOrders}
+                className="bg-slate-900 border border-slate-800 text-slate-300 py-2.5 px-4 rounded-xl hover:bg-slate-800 text-sm transition"
+              >
+                Yangilash
+              </button>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-800 text-xs font-bold text-slate-400 uppercase bg-slate-900/50">
+                    <th className="py-4 px-6">Mijoz</th>
+                    <th className="py-4 px-6">Restoran</th>
+                    <th className="py-4 px-6">Taomlar</th>
+                    <th className="py-4 px-6">Jami summa</th>
+                    <th className="py-4 px-6">Holat</th>
+                    <th className="py-4 px-6">Sana</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-sm">
+                  {eatsOrders.map((order) => {
+                    const statusStyles = {
+                      new: 'bg-blue-500/10 text-blue-400',
+                      accepted: 'bg-yellow-500/10 text-yellow-400',
+                      preparing: 'bg-orange-500/10 text-orange-400',
+                      ready: 'bg-purple-500/10 text-purple-400',
+                      picked: 'bg-cyan-500/10 text-cyan-400',
+                      delivered: 'bg-green-500/10 text-green-400',
+                      rejected: 'bg-red-500/10 text-red-400',
+                    };
+                    return (
+                      <tr key={order._id} className="hover:bg-slate-800/20">
+                        <td className="py-4 px-6 font-semibold text-slate-200">{order.userId?.name || 'Mijoz'}</td>
+                        <td className="py-4 px-6 text-slate-300">{order.restaurantId?.name || '—'}</td>
+                        <td className="py-4 px-6 text-slate-400">
+                          {order.items?.map(item => `${item.name} x ${item.quantity}`).join(', ')}
+                        </td>
+                        <td className="py-4 px-6 text-green-400 font-bold">{order.total?.toLocaleString()} UZS</td>
+                        <td className="py-4 px-6">
+                          <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold uppercase ${statusStyles[order.status] || 'bg-slate-800 text-slate-400'}`}>
+                            {order.status}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-slate-500">
+                          {new Date(order.createdAt).toLocaleString('uz-UZ')}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {eatsOrders.length === 0 && (
+                    <tr>
+                      <td colSpan="6" className="py-8 text-center text-slate-500">Buyurtmalar topilmadi.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'eats_analytics' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Eats Analitika</h2>
+                <p className="text-slate-400 text-sm">Taom yetkazib berish xizmati bo'yicha hisobotlar</p>
+              </div>
+              <button
+                onClick={fetchEatsAnalytics}
+                className="bg-slate-900 border border-slate-800 text-slate-300 py-2.5 px-4 rounded-xl hover:bg-slate-800 text-sm transition"
+              >
+                Yangilash
+              </button>
+            </div>
+
+            {/* Analytics Stats Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">Jami Restoranlar</span>
+                  <span className="text-3xl font-extrabold text-slate-100 block mt-2">{eatsAnalytics?.totalRestaurants || 0}</span>
+                </div>
+                <div className="bg-green-500/10 p-3.5 rounded-xl text-green-400"><Utensils size={22} /></div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">Faol Kurerlar</span>
+                  <span className="text-3xl font-extrabold text-slate-100 block mt-2">{eatsAnalytics?.activeCouriers || 0}</span>
+                </div>
+                <div className="bg-green-500/10 p-3.5 rounded-xl text-green-400"><Bike size={22} /></div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">Jami Buyurtmalar</span>
+                  <span className="text-3xl font-extrabold text-slate-100 block mt-2">{eatsAnalytics?.totalOrders || 0}</span>
+                </div>
+                <div className="bg-green-500/10 p-3.5 rounded-xl text-green-400"><ShoppingBag size={22} /></div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex items-center justify-between shadow-lg">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">Eats Tushumi</span>
+                  <span className="text-3xl font-extrabold text-green-400 block mt-2">{(eatsAnalytics?.revenue || 0).toLocaleString()} UZS</span>
+                </div>
+                <div className="bg-green-500/10 p-3.5 rounded-xl text-green-400"><TrendingUp size={22} /></div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== PROMO CODES TAB ===== */}
+        {activeTab === 'promo' && (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Promokodlar</h2>
+                <p className="text-slate-400 text-sm">Chegirma kodlarini yarating va boshqaring</p>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={fetchPromoCodes}
+                  className="bg-slate-900 border border-slate-800 text-slate-300 py-2.5 px-4 rounded-xl hover:bg-slate-800 text-sm transition"
+                >
+                  Yangilash
+                </button>
+                <button
+                  onClick={() => setPromoModal(true)}
+                  className="bg-green-500 hover:bg-green-400 text-slate-900 font-bold py-2.5 px-5 rounded-xl text-sm flex items-center gap-2 transition"
+                >
+                  <Plus size={16} />
+                  Yangi promokod
+                </button>
+              </div>
+            </div>
+
+            {/* Stats row */}
+            <div className="grid grid-cols-3 gap-6">
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">Jami kodlar</span>
+                  <span className="text-3xl font-extrabold text-slate-100 block mt-1">{promoList.length}</span>
+                </div>
+                <div className="bg-green-500/10 p-3 rounded-xl text-green-400"><Tag size={20} /></div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">Faol kodlar</span>
+                  <span className="text-3xl font-extrabold text-green-400 block mt-1">
+                    {promoList.filter(p => p.isActive).length}
+                  </span>
+                </div>
+                <div className="bg-green-500/10 p-3 rounded-xl text-green-400"><ShieldCheck size={20} /></div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-slate-500 text-xs font-semibold uppercase tracking-wider block">Jami ishlatilgan</span>
+                  <span className="text-3xl font-extrabold text-slate-100 block mt-1">
+                    {promoList.reduce((s, p) => s + (p.usedCount || 0), 0)}
+                  </span>
+                </div>
+                <div className="bg-green-500/10 p-3 rounded-xl text-green-400"><TrendingUp size={20} /></div>
+              </div>
+            </div>
+
+            {/* Promo table */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase tracking-wider">
+                    <th className="text-left px-6 py-4 font-semibold">Kod</th>
+                    <th className="text-left px-6 py-4 font-semibold">Chegirma</th>
+                    <th className="text-left px-6 py-4 font-semibold">Xizmat</th>
+                    <th className="text-left px-6 py-4 font-semibold">Ishlatildi / Limit</th>
+                    <th className="text-left px-6 py-4 font-semibold">Muddati</th>
+                    <th className="text-left px-6 py-4 font-semibold">Holat</th>
+                    <th className="text-right px-6 py-4 font-semibold">Amallar</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {promoList.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-12 text-slate-500">
+                        <Tag size={32} className="mx-auto mb-3 opacity-30" />
+                        <p>Hozircha promokodlar yo'q</p>
+                        <p className="text-xs mt-1">Yangi promokod yarating</p>
+                      </td>
+                    </tr>
+                  ) : (
+                    promoList.map((promo) => (
+                      <tr key={promo._id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition">
+                        <td className="px-6 py-4">
+                          <span className="font-mono font-bold text-green-400 bg-green-500/10 px-2 py-1 rounded-lg text-sm tracking-wider">
+                            {promo.code}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="font-bold text-slate-100 text-lg">{promo.discount}%</span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                            promo.service === 'all' ? 'bg-blue-500/15 text-blue-400' :
+                            promo.service === 'taxi' ? 'bg-amber-500/15 text-amber-400' :
+                            'bg-orange-500/15 text-orange-400'
+                          }`}>
+                            {promo.service === 'all' ? 'Hammasi' : promo.service === 'taxi' ? 'Taksi' : 'Eats'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 bg-slate-800 rounded-full h-1.5 min-w-16 max-w-24">
+                              <div
+                                className="bg-green-500 h-1.5 rounded-full"
+                                style={{ width: `${Math.min(100, ((promo.usedCount || 0) / promo.maxUses) * 100)}%` }}
+                              />
+                            </div>
+                            <span className="text-slate-300 text-xs font-semibold whitespace-nowrap">
+                              {promo.usedCount || 0} / {promo.maxUses}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-slate-400 text-xs">
+                          {promo.expiresAt
+                            ? new Date(promo.expiresAt) < new Date()
+                              ? <span className="text-red-400 font-semibold">Muddati tugagan</span>
+                              : new Date(promo.expiresAt).toLocaleDateString('uz-UZ')
+                            : <span className="text-slate-500">Cheksiz</span>
+                          }
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                            promo.isActive ? 'bg-green-500/15 text-green-400' : 'bg-slate-700 text-slate-400'
+                          }`}>
+                            {promo.isActive ? 'Faol' : 'Faol emas'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => handleTogglePromo(promo._id)}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                                promo.isActive
+                                  ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/20'
+                                  : 'bg-green-500/10 text-green-400 hover:bg-green-500/20 border border-green-500/20'
+                              }`}
+                            >
+                              {promo.isActive ? 'O\'chirish' : 'Yoqish'}
+                            </button>
+                            <button
+                              onClick={() => handleDeletePromo(promo._id, promo.code)}
+                              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+      </main>
+
+      {/* Promo Create Modal */}
+      {promoModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 w-full max-w-md shadow-2xl">
+            <h3 className="text-lg font-bold text-slate-100 mb-6 flex items-center gap-2">
+              <Tag size={20} className="text-green-400" />
+              Yangi Promokod
+            </h3>
+            <form onSubmit={handleCreatePromo} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                  Kod * (avtomatik katta harfga o'tkaziladi)
+                </label>
+                <input
+                  type="text"
+                  value={newPromo.code}
+                  onChange={e => setNewPromo(p => ({ ...p, code: e.target.value.toUpperCase() }))}
+                  className="w-full bg-slate-950 text-slate-100 placeholder-slate-600 border border-slate-700 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-400 focus:outline-none font-mono tracking-widest"
+                  placeholder="INFAST20"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Chegirma % *
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={newPromo.discount}
+                    onChange={e => setNewPromo(p => ({ ...p, discount: e.target.value }))}
+                    className="w-full bg-slate-950 text-slate-100 border border-slate-700 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-400 focus:outline-none"
+                    placeholder="20"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Maks. ishlatish
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={newPromo.maxUses}
+                    onChange={e => setNewPromo(p => ({ ...p, maxUses: e.target.value }))}
+                    className="w-full bg-slate-950 text-slate-100 border border-slate-700 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-400 focus:outline-none"
+                    placeholder="100"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                  Xizmat turi
+                </label>
+                <select
+                  value={newPromo.service}
+                  onChange={e => setNewPromo(p => ({ ...p, service: e.target.value }))}
+                  className="w-full bg-slate-950 text-slate-100 border border-slate-700 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-400 focus:outline-none"
+                >
+                  <option value="all">Hammasi (Taksi + Eats)</option>
+                  <option value="taxi">Faqat Taksi</option>
+                  <option value="eats">Faqat Eats</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                  Muddati (ixtiyoriy)
+                </label>
+                <input
+                  type="date"
+                  value={newPromo.expiresAt}
+                  onChange={e => setNewPromo(p => ({ ...p, expiresAt: e.target.value }))}
+                  className="w-full bg-slate-950 text-slate-100 border border-slate-700 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-400 focus:outline-none"
+                />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setPromoModal(false); setNewPromo({ code: '', discount: '', maxUses: '100', service: 'all', expiresAt: '' }); }}
+                  className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold py-3 rounded-xl transition"
+                >
+                  Bekor qilish
+                </button>
+                <button
+                  type="submit"
+                  disabled={promoLoading}
+                  className="flex-1 bg-green-500 hover:bg-green-400 text-slate-900 font-bold py-3 rounded-xl transition flex items-center justify-center gap-2"
+                >
+                  {promoLoading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                  Yaratish
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

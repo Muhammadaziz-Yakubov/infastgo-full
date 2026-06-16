@@ -1,0 +1,182 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "InFast Go API",
+    "version": "1.0.0",
+    "description": "InFast Go Ride-Hailing Backend API"
+  },
+  "servers": [
+    { "url": "http://localhost:5000/api", "description": "Local development" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    }
+  },
+  "security": [{ "BearerAuth": [] }],
+  "paths": {
+    "/auth/otp": {
+      "post": {
+        "summary": "Request OTP Code",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "phone": { "type": "string", "example": "+998901234567" },
+                  "isDriverLogin": { "type": "boolean", "example": false }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "OTP sent" } }
+      }
+    },
+    "/auth/verify": {
+      "post": {
+        "summary": "Verify OTP",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "phone": { "type": "string" },
+                  "code": { "type": "string" },
+                  "isDriverLogin": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Token returned" } }
+      }
+    },
+    "/rides/estimate": {
+      "post": {
+        "summary": "Estimate Ride Fare",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "distance": { "type": "number", "example": 5.4 } }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Fare estimates" } }
+      }
+    },
+    "/rides/request": {
+      "post": {
+        "summary": "Request a Ride",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pickup": { "type": "object" },
+                  "destination": { "type": "object" },
+                  "distance": { "type": "number" },
+                  "price": { "type": "number" },
+                  "tariff": { "type": "string", "enum": ["standart", "komfort", "biznes"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Ride created" } }
+      }
+    },
+    "/places": {
+      "get": {
+        "summary": "Search Places",
+        "security": [],
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 20 } }
+        ],
+        "responses": { "200": { "description": "Places list" } }
+      }
+    },
+    "/voice-order/transcribe": {
+      "post": {
+        "summary": "Transcribe and Parse Voice Order",
+        "description": "Accepts audio file, performs STT, parses pickup/destination/tariff, geocodes coordinates",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": { "type": "string", "format": "binary", "description": "Audio file (.m4a, .mp3)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successfully transcribed and parsed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "text": { "type": "string", "example": "Hokimiyatdan Yangi bozorga standart taksi" },
+                    "parsed": {
+                      "type": "object",
+                      "properties": {
+                        "pickup": { "type": "string", "example": "Hokimiyat" },
+                        "destination": { "type": "string", "example": "Yangi bozor" },
+                        "tariff": { "type": "string", "enum": ["standard", "comfort", "business"] }
+                      }
+                    },
+                    "coordinates": {
+                      "type": "object",
+                      "properties": {
+                        "pickup": {
+                          "type": "object",
+                          "properties": {
+                            "name": { "type": "string" },
+                            "address": { "type": "string" },
+                            "lat": { "type": "number" },
+                            "lng": { "type": "number" }
+                          }
+                        },
+                        "destination": {
+                          "type": "object",
+                          "properties": {
+                            "name": { "type": "string" },
+                            "address": { "type": "string" },
+                            "lat": { "type": "number" },
+                            "lng": { "type": "number" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "No file or empty file" },
+          "422": { "description": "Could not parse locations" },
+          "500": { "description": "Server error" }
+        }
+      }
+    }
+  }
+}
