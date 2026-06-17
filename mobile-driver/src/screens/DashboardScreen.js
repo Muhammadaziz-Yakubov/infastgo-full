@@ -123,6 +123,7 @@ export default function DashboardScreen({
   const acceptScale = useRef(new Animated.Value(1)).current;
   const declineScale = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const requestTimerAnim = useRef(new Animated.Value(1)).current;
 
   // Recenter map helper
   const recenterMap = () => {
@@ -155,6 +156,14 @@ export default function DashboardScreen({
         tension: 40,
         friction: 8,
         useNativeDriver: true,
+      }).start();
+
+      // Start 15s visual progress bar
+      requestTimerAnim.setValue(1);
+      Animated.timing(requestTimerAnim, {
+        toValue: 0,
+        duration: 15000,
+        useNativeDriver: false,
       }).start();
 
       // Trigger continuous pulse for accept button and sound trigger/vibration
@@ -605,13 +614,28 @@ export default function DashboardScreen({
           styles.requestBottomSheet, 
           { transform: [{ translateY: requestSheetY }] }
         ]}>
-          <View style={styles.requestAlertGlow} />
+          {/* Animated 15s Timer Progress Bar */}
+          <View style={styles.requestTimerTrack}>
+            <Animated.View style={[
+              styles.requestTimerBar,
+              {
+                width: requestTimerAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['0%', '100%']
+                })
+              }
+            ]} />
+          </View>
+          <View style={styles.dragHandle} />
 
           {/* Header section */}
           <View style={styles.requestHeader}>
             <View>
-              <Text style={styles.requestTitle}>YANGI BUYURTMA TAKLIFI</Text>
-              <Text style={styles.requestSubtitle}>Buyurtma ma'lumotlarini tekshiring</Text>
+              <View style={styles.requestTitleRow}>
+                <View style={styles.liveRequestDot} />
+                <Text style={styles.requestTitle}>YANGI TAXI BUYURTMA</Text>
+              </View>
+              <Text style={styles.requestSubtitle}>Mijoz taklif qilgan tarif</Text>
             </View>
             <View style={styles.requestPriceBadge}>
               <Text style={styles.requestPriceText}>
@@ -669,7 +693,7 @@ export default function DashboardScreen({
             </View>
 
             <View style={styles.requestDistanceBadge}>
-              <Feather name="navigation" size={13} color="#64748B" style={{ marginRight: 4 }} />
+              <Feather name="navigation" size={13} color="#3b32db" style={{ marginRight: 4 }} />
               <Text style={styles.requestDistanceText}>{activeRequest.distance} km</Text>
             </View>
           </View>
@@ -1128,60 +1152,78 @@ const styles = StyleSheet.create({
   // CORE RIDE REQUEST BOTTOM SHEET (SLIDE-UP OVERLAY CARD)
   requestBottomSheet: {
     position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 34 : 16,
-    left: 16,
-    right: 16,
+    bottom: 0,
+    left: 0,
+    right: 0,
     backgroundColor: '#FFFFFF',
-    borderRadius: 28,
-    padding: 24,
-    shadowColor: '#3b32db',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.15,
-    shadowRadius: 24,
-    elevation: 12,
-    borderWidth: 2,
-    borderColor: '#22C55E', // highlight border
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: -10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 24,
     zIndex: 100,
     overflow: 'hidden',
   },
-  requestAlertGlow: {
+  requestTimerTrack: {
+    height: 4,
+    backgroundColor: '#F1F5F9',
+    width: '100%',
+    overflow: 'hidden',
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    height: 4,
-    backgroundColor: '#22C55E',
+  },
+  requestTimerBar: {
+    height: '100%',
+    backgroundColor: '#22C55E', // Green countdown timer
   },
   requestHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 12,
+  },
+  requestTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  liveRequestDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#EF4444',
   },
   requestTitle: {
     fontSize: 11,
-    fontWeight: '900',
-    color: '#22C55E',
+    fontWeight: '950',
+    color: '#3b32db', // Premium primary purple
     letterSpacing: 1.5,
   },
   requestSubtitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
     color: '#0F172A',
-    marginTop: 2,
+    marginTop: 1,
   },
   requestPriceBadge: {
-    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+    backgroundColor: 'rgba(59, 50, 219, 0.08)',
     borderRadius: 14,
     paddingVertical: 8,
     paddingHorizontal: 16,
     borderWidth: 1,
-    borderColor: 'rgba(34, 197, 94, 0.18)',
+    borderColor: 'rgba(59, 50, 219, 0.18)',
   },
   requestPriceText: {
     fontSize: 18,
     fontWeight: '900',
-    color: '#22C55E',
+    color: '#3b32db',
   },
   requestPriceCurrency: {
     fontSize: 11,
@@ -1191,11 +1233,11 @@ const styles = StyleSheet.create({
   // Route indicator layout
   requestRouteBox: {
     backgroundColor: '#F8FAFC',
-    borderRadius: 20,
-    padding: 16,
+    borderRadius: 16,
+    padding: 12,
     borderWidth: 1,
-    borderColor: '#EEF2FF',
-    marginBottom: 20,
+    borderColor: '#F1F5F9',
+    marginBottom: 12,
   },
   requestRouteRow: {
     flexDirection: 'row',
@@ -1241,7 +1283,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   routeAddressText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: '#1E293B',
     marginTop: 1,
@@ -1263,7 +1305,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 12,
   },
   passengerProfile: {
     flexDirection: 'row',
@@ -1319,14 +1361,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     height: 52,
     borderRadius: 16,
-    backgroundColor: '#FFF5F5',
-    borderWidth: 1.5,
-    borderColor: 'rgba(239, 68, 68, 0.2)',
+    backgroundColor: '#F1F5F9',
+    borderWidth: 0,
   },
   declineBtnText: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#EF4444',
+    color: '#64748B',
   },
   requestAcceptBtn: {
     flexDirection: 'row',
@@ -1334,12 +1375,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     height: 52,
     borderRadius: 16,
-    backgroundColor: '#22C55E',
-    shadowColor: '#22C55E',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 4,
+    backgroundColor: '#3b32db',
+    shadowColor: '#3b32db',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 6,
   },
   acceptBtnText: {
     fontSize: 15,
