@@ -129,24 +129,39 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('active'); // 'active' | 'all'
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [prevNewOrdersCount, setPrevNewOrdersCount] = useState(0);
 
-  const loadOrders = async () => {
+  const loadOrders = async (isManual = false) => {
     try {
-      setLoading(true);
+      if (isManual) setLoading(true);
       const res = await api.getOrders();
-      if (res.success) setOrders(res.orders);
+      if (res.success) {
+        setOrders(res.orders);
+        
+        // Count new orders
+        const newOrders = res.orders.filter(o => o.status === 'new');
+        if (newOrders.length > prevNewOrdersCount) {
+          // A new order has arrived! Play sound if enabled by user interaction
+          if (soundEnabled) {
+            const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-120.wav');
+            audio.play().catch(e => console.log('Audio playback blocked by browser:', e));
+          }
+        }
+        setPrevNewOrdersCount(newOrders.length);
+      }
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (isManual) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadOrders();
-    const interval = setInterval(loadOrders, 15000); // Auto-refresh every 15s
+    loadOrders(true);
+    const interval = setInterval(() => loadOrders(false), 8000); // Auto-refresh every 8s
     return () => clearInterval(interval);
-  }, []);
+  }, [soundEnabled, prevNewOrdersCount]);
 
   const filteredOrders = filter === 'active'
     ? orders.filter(o => ['new', 'accepted', 'preparing', 'ready'].includes(o.status))
@@ -160,7 +175,7 @@ export default function OrdersPage() {
       </div>
 
       <div className="card">
-        <div className="card-header">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               className={filter === 'active' ? 'btn-primary' : 'btn-outline'}
@@ -175,9 +190,20 @@ export default function OrdersPage() {
               Barchasi
             </button>
           </div>
-          <button className="btn-outline" onClick={loadOrders} disabled={loading}>
-            ↻ Yangilash
-          </button>
+          
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button 
+              className={soundEnabled ? 'btn-primary' : 'btn-outline'}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              onClick={() => setSoundEnabled(!soundEnabled)}
+            >
+              <span>{soundEnabled ? '🔊 Ovoz yoqilgan' : '🔇 Ovoz o\'chirilgan'}</span>
+            </button>
+            
+            <button className="btn-outline" onClick={() => loadOrders(true)} disabled={loading}>
+              ↻ Yangilash
+            </button>
+          </div>
         </div>
 
         <div style={{ overflowX: 'auto' }}>
