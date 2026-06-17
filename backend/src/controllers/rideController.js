@@ -7,6 +7,8 @@ const matchService = require('../services/matchService');
 const socketService = require('../services/socketService');
 const Transaction = require('../models/Transaction');
 const { getSettings } = require('../services/settingsService');
+const { validateRideTransition } = require('../middleware/stateMachine');
+const auditLog = require('../services/auditLog');
 
 const createClickPaymentUrl = (ride) => {
   const serviceId = process.env.CLICK_SERVICE_ID || '101737';
@@ -69,7 +71,7 @@ exports.estimateFare = async (req, res) => {
 // Request a Ride
 exports.requestRide = async (req, res) => {
   try {
-    const { pickup, destination, distance, price, tariff, options, paymentMethod, promoCode } = req.body;
+    const { pickup, destination, distance, price, tariff, options, paymentMethod, promoCode, routeGeometry } = req.body;
     const userId = req.user.id;
 
     if (!pickup || !destination || !distance || !price) {
@@ -134,6 +136,7 @@ exports.requestRide = async (req, res) => {
       tariff: chosenTariff,
       status: chosenPaymentMethod === 'click' ? 'payment_pending' : 'searching',
       options: options || { ac: false, luggage: false },
+      routeGeometry: routeGeometry || { type: 'LineString', coordinates: [] },
       paymentMethod: chosenPaymentMethod,
       paymentStatus: chosenPaymentMethod === 'click' ? 'pending' : 'unpaid',
     });
@@ -240,6 +243,9 @@ const dispatchRide = async (rideId, excludeDriverIds = []) => {
           
           checkRide.driverId = null;
           await checkRide.save();
+
+          // Notify driver that the offer has timed out so the frontend removes the screen
+          socketService.sendToDriver(driver._id.toString(), 'rideOfferTimeout', { rideId });
           
           // Retry matching
           dispatchRide(rideId, excludeDriverIds);
@@ -262,15 +268,6 @@ exports.acceptRide = async (req, res) => {
     const { rideId } = req.params;
     const driverId = req.user.id;
 
-    const ride = await Ride.findById(rideId);
-    if (!ride) {
-      return res.status(404).json({ success: false, message: 'Buyurtma topilmadi' });
-    }
-
-    if (ride.status !== 'searching') {
-      return res.status(400).json({ success: false, message: 'Ushbu buyurtma allaqachon qabul qilingan yoki bekor qilingan' });
-    }
-
     const driver = await Driver.findById(driverId);
     if (!driver || driver.status !== 'online') {
       return res.status(400).json({ success: false, message: 'Siz hozir buyurtma qabul qila olmaysiz. Tizimda online bo\'ling.' });
@@ -280,16 +277,36 @@ exports.acceptRide = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Qarzdorlik limiti oshib ketgan. Qarzni to\'lang.' });
     }
 
-    // Update ride status
-    ride.status = 'accepted';
-    ride.driverId = driverId;
-    ride.acceptedAt = new Date();
-    await ride.save();
+    // RACE CONDITION FIX: Atomic update — only one driver can accept
+    // findOneAndUpdate with status: 'searching' ensures no two drivers can accept the same ride
+    const ride = await Ride.findOneAndUpdate(
+      { _id: rideId, status: 'searching' },
+      {
+        $set: {
+          status: 'accepted',
+          driverId: driverId,
+          acceptedAt: new Date(),
+        },
+      },
+      { new: true }
+    );
+
+    if (!ride) {
+      return res.status(400).json({ success: false, message: 'Ushbu buyurtma allaqachon qabul qilingan yoki bekor qilingan' });
+    }
+
     await ride.populate('userId', 'name surname phone');
 
     // Update driver status
     driver.status = 'busy';
     await driver.save();
+
+    // Audit log
+    await auditLog.log({
+      action: 'ride.accepted',
+      actor: { id: driverId, role: 'driver' },
+      target: { type: 'ride', id: rideId },
+    });
 
     // Notify user
     socketService.sendToUser(ride.userId._id.toString(), 'rideStatusUpdate', {
@@ -365,6 +382,12 @@ exports.updateRideStatus = async (req, res) => {
 
     if (ride.driverId.toString() !== driverId) {
       return res.status(403).json({ success: false, message: 'Ushbu buyurtmani boshqarish huquqiga ega emassiz' });
+    }
+
+    // STATE MACHINE: Validate transition
+    const transition = validateRideTransition(ride.status, status);
+    if (!transition.valid) {
+      return res.status(400).json({ success: false, message: transition.message });
     }
 
     ride.status = status;

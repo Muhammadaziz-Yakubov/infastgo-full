@@ -27,6 +27,15 @@ const init = (server) => {
       if (userId) socket.userId = userId;
       if (role) socket.role = role;
 
+      if (userId && role) {
+        const cleanupKey = `${role}_${userId}`;
+        if (global.disconnectTimeouts && global.disconnectTimeouts.has(cleanupKey)) {
+          clearTimeout(global.disconnectTimeouts.get(cleanupKey));
+          global.disconnectTimeouts.delete(cleanupKey);
+          console.log(`[SocketService] Cancelled disconnect cleanup for ${cleanupKey} (Reconnected)`);
+        }
+      }
+
       if (room) {
         socket.join(room);
         console.log(`Socket ${socket.id} joined room: ${room}`);
@@ -84,18 +93,36 @@ const init = (server) => {
       }
     });
 
-    // Handle manual disconnect
+    // Disconnect timeout map to handle network drops (4G <-> WiFi)
     socket.on('disconnect', () => {
-      console.log(`Socket disconnected: ${socket.id}`);
-      if (socket.role === 'driver' && socket.userId) {
-        driverSockets.delete(socket.userId);
-      } else if (socket.role === 'user' && socket.userId) {
-        userSockets.delete(socket.userId);
-      } else if (socket.role === 'admin') {
-        adminSockets.delete(socket.id);
+      console.log(`Socket disconnected: ${socket.id} (Pending grace period check)`);
+      
+      const { userId, role } = socket;
+      if (!userId || !role) return;
+
+      const cleanupKey = `${role}_${userId}`;
+      
+      // Cancel previous timeouts if any
+      if (global.disconnectTimeouts?.has(cleanupKey)) {
+        clearTimeout(global.disconnectTimeouts.get(cleanupKey));
       }
 
-      broadcastActiveStats();
+      if (!global.disconnectTimeouts) {
+        global.disconnectTimeouts = new Map();
+      }
+
+      const timeoutId = setTimeout(() => {
+        console.log(`Grace period expired for ${cleanupKey}. Cleaning up socket maps.`);
+        if (role === 'driver') {
+          driverSockets.delete(userId);
+        } else if (role === 'user') {
+          userSockets.delete(userId);
+        }
+        global.disconnectTimeouts.delete(cleanupKey);
+        broadcastActiveStats();
+      }, 10000); // 10 seconds grace period
+
+      global.disconnectTimeouts.set(cleanupKey, timeoutId);
     });
   });
 

@@ -2,11 +2,14 @@
  * walletService.js
  * Central service for all wallet operations.
  * RULE: Never update balance directly — always create EatsTransaction.
+ * Uses MongoDB transactions for atomicity where supported.
  */
 
+const mongoose = require('mongoose');
 const Wallet = require('../models/Wallet');
 const EatsTransaction = require('../models/EatsTransaction');
 const FoodOrder = require('../models/FoodOrder');
+const auditLog = require('./auditLog');
 
 const INFAST_OWNER_ID = 'infast'; // Singleton platform wallet
 
@@ -22,15 +25,15 @@ const getOrCreateWallet = async (ownerId, ownerType) => {
 };
 
 /**
- * Credit a wallet and record transaction.
+ * Credit a wallet and record transaction (with optional session for Mongo transactions).
  */
-const creditWallet = async (wallet, amount, txData) => {
+const creditWallet = async (wallet, amount, txData, session = null) => {
   const balanceBefore = wallet.balance;
   wallet.balance += amount;
   wallet.totalEarned += amount;
-  await wallet.save();
+  await wallet.save({ session });
 
-  await EatsTransaction.create({
+  await EatsTransaction.create([{
     walletId: wallet._id,
     ownerId: wallet.ownerId,
     ownerType: wallet.ownerType,
@@ -40,16 +43,16 @@ const creditWallet = async (wallet, amount, txData) => {
     balanceAfter: wallet.balance,
     status: 'completed',
     ...txData,
-  });
+  }], { session });
 
   return wallet;
 };
 
 /**
  * Debit a wallet and record transaction.
- * Returns false if insufficient balance.
+ * Returns null if insufficient balance.
  */
-const debitWallet = async (wallet, amount, txData) => {
+const debitWallet = async (wallet, amount, txData, session = null) => {
   if (wallet.balance < amount) {
     return null; // insufficient balance
   }
@@ -57,9 +60,9 @@ const debitWallet = async (wallet, amount, txData) => {
   const balanceBefore = wallet.balance;
   wallet.balance -= amount;
   wallet.totalWithdrawn += amount;
-  await wallet.save();
+  await wallet.save({ session });
 
-  await EatsTransaction.create({
+  await EatsTransaction.create([{
     walletId: wallet._id,
     ownerId: wallet.ownerId,
     ownerType: wallet.ownerType,
@@ -69,21 +72,25 @@ const debitWallet = async (wallet, amount, txData) => {
     balanceAfter: wallet.balance,
     status: 'completed',
     ...txData,
-  });
+  }], { session });
 
   return wallet;
 };
 
 /**
- * Main settlement function.
+ * Main settlement function — uses MongoDB transaction for atomicity.
  * Called automatically when order status → 'delivered'.
  * Splits money: restaurant + courier + infast.
  */
 const settleOrder = async (order) => {
+  // Use Mongo transaction if replica set is available
+  const session = await mongoose.startSession();
+
   try {
     // Prevent double settlement
     if (order.isSettled) {
       console.log(`[WalletService] Order ${order._id} already settled. Skipping.`);
+      session.endSession();
       return;
     }
 
@@ -97,75 +104,159 @@ const settleOrder = async (order) => {
 
     console.log(`[WalletService] Settling order ${orderRef}: subtotal=${subtotal}, delivery=${deliveryFee}, service=${serviceFee}`);
 
-    // 1. Restaurant gets subtotal
-    if (restaurantId && subtotal > 0) {
-      const restaurantWallet = await getOrCreateWallet(restaurantId, 'restaurant');
-      await creditWallet(restaurantWallet, subtotal, {
-        orderId: order._id,
-        type: 'restaurant_earning',
-        paymentMethod,
-        description: `Buyurtma ${orderRef} uchun daromad`,
+    // Try with transaction first (requires replica set)
+    try {
+      await session.withTransaction(async () => {
+        // 1. Restaurant gets subtotal
+        if (restaurantId && subtotal > 0) {
+          const restaurantWallet = await getOrCreateWallet(restaurantId, 'restaurant');
+          await creditWallet(restaurantWallet, subtotal, {
+            orderId: order._id,
+            type: 'restaurant_earning',
+            paymentMethod,
+            description: `Buyurtma ${orderRef} uchun daromad`,
+          }, session);
+        }
+
+        // 2. Courier gets deliveryFee + track cash debt if cash payment
+        if (courierId && deliveryFee > 0) {
+          const courierWallet = await getOrCreateWallet(courierId, 'courier');
+          await creditWallet(courierWallet, deliveryFee, {
+            orderId: order._id,
+            type: 'courier_earning',
+            paymentMethod,
+            description: `Yetkazib berish haqi ${orderRef}`,
+          }, session);
+
+          // If cash: courier collected cash from customer → debit balance by order total
+          if (paymentMethod === 'cash') {
+            const totalCollected = subtotal + deliveryFee + serviceFee;
+            const balanceBefore = courierWallet.balance;
+
+            courierWallet.balance -= totalCollected;
+            courierWallet.cashDebt = courierWallet.balance < 0 ? -courierWallet.balance : 0;
+            await courierWallet.save({ session });
+
+            await EatsTransaction.create([{
+              walletId: courierWallet._id,
+              ownerId: courierWallet.ownerId,
+              ownerType: 'courier',
+              orderId: order._id,
+              amount: totalCollected,
+              direction: 'debit',
+              type: 'cash_settlement',
+              paymentMethod,
+              balanceBefore,
+              balanceAfter: courierWallet.balance,
+              status: 'completed',
+              description: `Mijozdan yig'ilgan naqd pul: -${totalCollected.toLocaleString()} UZS (Buyurtma ${orderRef})`,
+            }], { session });
+
+            console.log(`[WalletService] Courier ${courierId} cash collected: ${totalCollected}, balance: ${balanceBefore} -> ${courierWallet.balance}`);
+          }
+        }
+
+        // 3. InFast platform gets serviceFee
+        if (serviceFee > 0) {
+          const infastWallet = await getOrCreateWallet(INFAST_OWNER_ID, 'infast');
+          await creditWallet(infastWallet, serviceFee, {
+            orderId: order._id,
+            type: 'service_fee',
+            paymentMethod,
+            description: `Servis to'lovi ${orderRef}`,
+          }, session);
+        }
+
+        // Mark order as settled
+        await FoodOrder.findByIdAndUpdate(order._id, { isSettled: true }, { session });
       });
-    }
-
-    // 2. Courier gets deliveryFee + track cash debt if cash payment
-    if (courierId && deliveryFee > 0) {
-      const courierWallet = await getOrCreateWallet(courierId, 'courier');
-      await creditWallet(courierWallet, deliveryFee, {
-        orderId: order._id,
-        type: 'courier_earning',
-        paymentMethod,
-        description: `Yetkazib berish haqi ${orderRef}`,
-      });
-
-      // If cash: courier collected cash from customer → debit balance by order total
-      if (paymentMethod === 'cash') {
-        const totalCollected = subtotal + deliveryFee + serviceFee;
-        const balanceBefore = courierWallet.balance;
-        
-        courierWallet.balance -= totalCollected;
-        courierWallet.cashDebt = courierWallet.balance < 0 ? -courierWallet.balance : 0;
-        await courierWallet.save();
-
-        await EatsTransaction.create({
-          walletId: courierWallet._id,
-          ownerId: courierWallet.ownerId,
-          ownerType: 'courier',
-          orderId: order._id,
-          amount: totalCollected,
-          direction: 'debit',
-          type: 'cash_settlement',
-          paymentMethod,
-          balanceBefore,
-          balanceAfter: courierWallet.balance,
-          status: 'completed',
-          description: `Mijozdan yig'ilgan naqd pul: -${totalCollected.toLocaleString()} UZS (Buyurtma ${orderRef})`,
-        });
-
-        console.log(`[WalletService] Courier ${courierId} cash collected: ${totalCollected}, balance: ${balanceBefore} -> ${courierWallet.balance}`);
+    } catch (txError) {
+      // Fallback: if no replica set, run without transaction (standalone MongoDB)
+      if (txError.message?.includes('Transaction') || txError.codeName === 'IllegalOperation') {
+        console.warn('[WalletService] MongoDB transactions not supported (standalone). Running without transaction...');
+        await settleOrderWithoutTransaction(order, restaurantId, courierId, subtotal, deliveryFee, serviceFee, paymentMethod, orderRef);
+      } else {
+        throw txError;
       }
     }
 
-    // 3. InFast platform gets serviceFee
-    if (serviceFee > 0) {
-      const infastWallet = await getOrCreateWallet(INFAST_OWNER_ID, 'infast');
-      await creditWallet(infastWallet, serviceFee, {
-        orderId: order._id,
-        type: 'service_fee',
-        paymentMethod,
-        description: `Servis to'lovi ${orderRef}`,
-      });
-    }
-
-    // Mark order as settled
-    await FoodOrder.findByIdAndUpdate(order._id, { isSettled: true });
+    await auditLog.log({
+      action: 'wallet.order.settled',
+      target: { type: 'order', id: order._id },
+      details: { orderRef, subtotal, deliveryFee, serviceFee, paymentMethod },
+    });
 
     console.log(`[WalletService] Order ${orderRef} settled successfully.`);
     return true;
   } catch (err) {
     console.error(`[WalletService] Settlement failed for order ${order._id}:`, err.message);
     throw err;
+  } finally {
+    session.endSession();
   }
+};
+
+/**
+ * Fallback settlement without MongoDB transaction (for standalone instances).
+ */
+const settleOrderWithoutTransaction = async (order, restaurantId, courierId, subtotal, deliveryFee, serviceFee, paymentMethod, orderRef) => {
+  // 1. Restaurant gets subtotal
+  if (restaurantId && subtotal > 0) {
+    const restaurantWallet = await getOrCreateWallet(restaurantId, 'restaurant');
+    await creditWallet(restaurantWallet, subtotal, {
+      orderId: order._id,
+      type: 'restaurant_earning',
+      paymentMethod,
+      description: `Buyurtma ${orderRef} uchun daromad`,
+    });
+  }
+
+  // 2. Courier gets deliveryFee
+  if (courierId && deliveryFee > 0) {
+    const courierWallet = await getOrCreateWallet(courierId, 'courier');
+    await creditWallet(courierWallet, deliveryFee, {
+      orderId: order._id,
+      type: 'courier_earning',
+      paymentMethod,
+      description: `Yetkazib berish haqi ${orderRef}`,
+    });
+
+    if (paymentMethod === 'cash') {
+      const totalCollected = subtotal + deliveryFee + serviceFee;
+      const balanceBefore = courierWallet.balance;
+      courierWallet.balance -= totalCollected;
+      courierWallet.cashDebt = courierWallet.balance < 0 ? -courierWallet.balance : 0;
+      await courierWallet.save();
+
+      await EatsTransaction.create({
+        walletId: courierWallet._id,
+        ownerId: courierWallet.ownerId,
+        ownerType: 'courier',
+        orderId: order._id,
+        amount: totalCollected,
+        direction: 'debit',
+        type: 'cash_settlement',
+        paymentMethod,
+        balanceBefore,
+        balanceAfter: courierWallet.balance,
+        status: 'completed',
+        description: `Mijozdan yig'ilgan naqd pul: -${totalCollected.toLocaleString()} UZS (Buyurtma ${orderRef})`,
+      });
+    }
+  }
+
+  // 3. InFast platform gets serviceFee
+  if (serviceFee > 0) {
+    const infastWallet = await getOrCreateWallet(INFAST_OWNER_ID, 'infast');
+    await creditWallet(infastWallet, serviceFee, {
+      orderId: order._id,
+      type: 'service_fee',
+      paymentMethod,
+      description: `Servis to'lovi ${orderRef}`,
+    });
+  }
+
+  await FoodOrder.findByIdAndUpdate(order._id, { isSettled: true });
 };
 
 /**
@@ -200,6 +291,13 @@ const settleCourierCash = async (courierId, amount, paymentMethod, orderIds = []
     orderId: orderIds.length > 0 ? orderIds[0] : null,
   });
 
+  await auditLog.log({
+    action: 'wallet.courier.cash_settled',
+    actor: { id: courierId, role: 'courier' },
+    target: { type: 'wallet', id: courierWallet._id },
+    details: { amount, paymentMethod, balanceBefore, balanceAfter: courierWallet.balance },
+  });
+
   return courierWallet;
 };
 
@@ -211,11 +309,21 @@ const processWithdrawal = async (walletId, amount) => {
   const wallet = await Wallet.findById(walletId);
   if (!wallet) throw new Error('Wallet topilmadi');
 
-  return await debitWallet(wallet, amount, {
+  const result = await debitWallet(wallet, amount, {
     type: 'withdrawal',
     paymentMethod: 'click',
     description: `Pul chiqarish so'rovi tasdiqlandi`,
   });
+
+  if (result) {
+    await auditLog.log({
+      action: 'wallet.withdrawal.processed',
+      target: { type: 'wallet', id: walletId },
+      details: { amount },
+    });
+  }
+
+  return result;
 };
 
 module.exports = {

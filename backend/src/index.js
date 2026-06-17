@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
+const helmet = require('helmet');
 
 // Load environment variables
 dotenv.config();
@@ -23,6 +24,8 @@ const eatsOrderRoutes = require('./routes/eatsOrderRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const promoRoutes = require('./routes/promoRoutes');
 const socketService = require('./services/socketService');
+const { socketAuthMiddleware } = require('./middleware/authMiddleware');
+const { generalLimiter } = require('./middleware/rateLimiter');
 const swaggerUi = require('swagger-ui-express');
 const swaggerDocument = require('./swagger.json');
 
@@ -36,12 +39,15 @@ const Courier = require('./models/Courier');
 const app = express();
 const server = http.createServer(app);
 
-// Initialize Socket.io
-socketService.init(server);
+// Initialize Socket.io with JWT authentication
+const io = socketService.init(server);
+io.use(socketAuthMiddleware);
 
 // Middleware
+app.use(helmet({ contentSecurityPolicy: false })); // Security headers
 app.use(cors());
 app.use(express.json());
+app.use(generalLimiter); // Global API rate limiting
 app.use('/images', express.static(path.join(__dirname, '../public/images')));
 
 // Routes

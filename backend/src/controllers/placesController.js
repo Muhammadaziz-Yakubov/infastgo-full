@@ -142,6 +142,62 @@ exports.reverseGeocode = async (req, res) => {
       });
     }
 
+    // Mapbox Geocoding Fallback for production-grade reliability
+    try {
+      const mapboxToken = process.env.MAPBOX_ACCESS_TOKEN;
+      if (!mapboxToken) {
+        console.warn('[PlacesController] MAPBOX_ACCESS_TOKEN is not defined in env.');
+        return res.json({ success: true, match: false });
+      }
+      const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${mapboxToken}&language=uz,ru,en&limit=1`;
+      const response = await fetch(url);
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.features && data.features.length > 0) {
+          const feature = data.features[0];
+          
+          // Optionally cache this new place in the local DB so future lookups are immediate
+          try {
+            const cachedPlace = await Place.create({
+              name: feature.text || 'Noma\'lum manzil',
+              address: feature.place_name || '',
+              location: { lat, lng },
+              type: 'point',
+              radius: 50
+            });
+            
+            return res.json({
+              success: true,
+              match: true,
+              place: {
+                id: cachedPlace._id.toString(),
+                name: cachedPlace.name,
+                address: cachedPlace.address,
+                lat: cachedPlace.location.lat,
+                lng: cachedPlace.location.lng,
+              }
+            });
+          } catch (dbCacheErr) {
+            // If DB save fails (e.g. unique constraints), just return directly
+            return res.json({
+              success: true,
+              match: true,
+              place: {
+                id: `mapbox_${feature.id}`,
+                name: feature.text || 'Noma\'lum manzil',
+                address: feature.place_name || '',
+                lat,
+                lng,
+              }
+            });
+          }
+        }
+      }
+    } catch (mapboxErr) {
+      console.warn('[PlacesController] Mapbox reverse geocode fallback failed:', mapboxErr.message);
+    }
+
     return res.json({ success: true, match: false });
   } catch (err) {
     console.error('reverseGeocode error:', err);

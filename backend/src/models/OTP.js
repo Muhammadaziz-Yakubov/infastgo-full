@@ -10,6 +10,15 @@ const OTPSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  attempts: {
+    type: Number,
+    default: 0,
+    max: 5,
+  },
+  used: {
+    type: Boolean,
+    default: false,
+  },
   expiresAt: {
     type: Date,
     required: true,

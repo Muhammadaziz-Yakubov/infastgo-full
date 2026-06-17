@@ -6,6 +6,8 @@ const Delivery = require('../models/Delivery');
 const courierMatchService = require('../services/courierMatchService');
 const socketService = require('../services/socketService');
 const walletService = require('../services/walletService');
+const { validateFoodOrderTransition } = require('../middleware/stateMachine');
+const auditLog = require('../services/auditLog');
 
 // User Screen: Get restaurants near the user (using MongoDB geospatial query)
 exports.getRestaurants = async (req, res) => {
@@ -134,6 +136,12 @@ exports.updateOrderStatus = async (req, res) => {
     const order = await FoodOrder.findById(id).populate('restaurantId');
     if (!order) {
       return res.status(404).json({ success: false, message: 'Buyurtma topilmadi.' });
+    }
+
+    // STATE MACHINE: Validate transition
+    const transition = validateFoodOrderTransition(order.status, status);
+    if (!transition.valid) {
+      return res.status(400).json({ success: false, message: transition.message });
     }
 
     order.status = status;

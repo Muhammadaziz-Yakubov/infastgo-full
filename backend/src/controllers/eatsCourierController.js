@@ -111,27 +111,29 @@ exports.acceptOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Kurer qabul qila olmaydi yoki online emas.' });
     }
 
-    const order = await FoodOrder.findById(orderId).populate('restaurantId');
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Buyurtma topilmadi.' });
-    }
-
-    // Allow accepting when status is 'accepted' or 'preparing' (courier dispatched early)
+    // RACE CONDITION FIX: Atomic assignment — only one courier can accept
     const acceptableStatuses = ['accepted', 'preparing', 'ready'];
-    if (!acceptableStatuses.includes(order.status)) {
+    const order = await FoodOrder.findOneAndUpdate(
+      {
+        _id: orderId,
+        status: { $in: acceptableStatuses },
+        $or: [
+          { courierId: null },
+          { courierId: courierId }, // Allow re-accept by same courier
+        ],
+      },
+      {
+        $set: {
+          courierId: courierId,
+          updatedAt: Date.now(),
+        },
+      },
+      { new: true }
+    ).populate('restaurantId');
+
+    if (!order) {
       return res.status(400).json({ success: false, message: 'Buyurtma boshqa kurer tomonidan olindi yoki mavjud emas.' });
     }
-
-    // Check if already assigned to another courier
-    if (order.courierId && order.courierId.toString() !== courierId.toString()) {
-      return res.status(400).json({ success: false, message: 'Bu buyurtma allaqachon boshqa kuryerga biriktirilgan.' });
-    }
-
-    // Assign courier and change status to picked
-    order.courierId = courierId;
-    order.status = 'picked';
-    order.updatedAt = Date.now();
-    await order.save();
 
     // Mark courier as delivering
     courier.status = 'delivering';
@@ -149,8 +151,49 @@ exports.acceptOrder = async (req, res) => {
 
     const io = socketService.getIO();
     if (io) {
+      // Notify client that courier is assigned (maintain current status: ready/preparing)
+      io.to(`order_${order._id}`).emit('order_status_changed', { orderId, status: order.status, courierId });
+      io.to(`restaurant_${order.restaurantId._id}`).emit('order_status_changed', { orderId, status: order.status, courierId });
+    }
+
+    return res.status(200).json({ success: true, order });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Pickup Order from Restaurant
+exports.pickupOrder = async (req, res) => {
+  try {
+    const courierId = req.user._id;
+    const { orderId } = req.params;
+
+    const courier = await EatsCourier.findById(courierId);
+    if (!courier) {
+      return res.status(404).json({ success: false, message: 'Kurer topilmadi.' });
+    }
+
+    const order = await FoodOrder.findById(orderId);
+    if (!order || order.courierId.toString() !== courierId.toString()) {
+      return res.status(400).json({ success: false, message: 'Buyurtma sizga biriktirilmagan.' });
+    }
+
+    // Move to 'picked' status
+    order.status = 'picked';
+    order.updatedAt = Date.now();
+    await order.save();
+
+    // Update Delivery Log status
+    const delivery = await Delivery.findOne({ orderId, courierId });
+    if (delivery) {
+      delivery.status = 'picked';
+      await delivery.save();
+    }
+
+    const io = socketService.getIO();
+    if (io) {
       io.to(`order_${order._id}`).emit('order_status_changed', { orderId, status: 'picked' });
-      io.to(`restaurant_${order.restaurantId._id}`).emit('order_status_changed', { orderId, status: 'picked' });
+      io.to(`restaurant_${order.restaurantId.toString()}`).emit('order_status_changed', { orderId, status: 'picked' });
     }
 
     return res.status(200).json({ success: true, order });

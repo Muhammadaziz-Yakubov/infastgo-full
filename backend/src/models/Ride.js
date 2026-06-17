@@ -43,6 +43,10 @@ const RideSchema = new mongoose.Schema({
     ac: { type: Boolean, default: false },
     luggage: { type: Boolean, default: false },
   },
+  routeGeometry: {
+    type: { type: String, enum: ['LineString'], default: 'LineString' },
+    coordinates: { type: [[Number]], default: [] }
+  },
   paymentMethod: {
     type: String,
     enum: ['cash', 'click'],

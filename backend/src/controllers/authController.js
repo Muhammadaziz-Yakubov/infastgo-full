@@ -5,12 +5,9 @@ const smsService = require('../services/smsService');
 const jwt = require('jsonwebtoken');
 const Transaction = require('../models/Transaction');
 const { getSettings } = require('../services/settingsService');
+const { generateAccessToken, generateRefreshToken } = require('../middleware/authMiddleware');
+const auditLog = require('../services/auditLog');
 
-
-// Generate JWT token
-const generateToken = (id, role) => {
-  return jwt.sign({ id, role }, process.env.JWT_SECRET, { expiresIn: '30d' });
-};
 
 // Request OTP
 exports.requestOTP = async (req, res) => {
@@ -19,6 +16,19 @@ exports.requestOTP = async (req, res) => {
 
     if (!phone) {
       return res.status(400).json({ success: false, message: 'Telefon raqam kiritilishi shart' });
+    }
+
+    // OTP reuse protection: check if an OTP was recently sent (within last 60 seconds)
+    const existingOTP = await OTP.findOne({ phone });
+    if (existingOTP) {
+      const timeSinceCreated = Date.now() - (existingOTP.expiresAt.getTime() - 5 * 60 * 1000);
+      if (timeSinceCreated < 60 * 1000) {
+        return res.status(429).json({
+          success: false,
+          message: 'SMS kod allaqachon yuborilgan. 60 soniya kutib turing.',
+          retryAfter: Math.ceil((60 * 1000 - timeSinceCreated) / 1000),
+        });
+      }
     }
 
     // If driver login, make sure driver account is created by admin first
@@ -39,15 +49,23 @@ exports.requestOTP = async (req, res) => {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
-    // Save or update OTP
+    // Save or update OTP (with attempt tracking)
     await OTP.findOneAndUpdate(
       { phone },
-      { code, expiresAt },
+      { code, expiresAt, attempts: 0, used: false },
       { upsert: true, new: true }
     );
 
     // Send SMS
     await smsService.sendOTP(phone, code);
+
+    // Audit log
+    await auditLog.log({
+      action: 'auth.otp.requested',
+      actor: { ip: req.ip },
+      target: { type: 'phone', id: phone },
+      details: { isDriverLogin },
+    });
 
     // In local development, return code in response for easier testing
     const responseData = { success: true, message: 'OTP tasdiqlash kodi yuborildi' };
@@ -73,11 +91,54 @@ exports.verifyOTP = async (req, res) => {
 
     // Find and validate OTP
     const otpRecord = await OTP.findOne({ phone });
-    if (!otpRecord || otpRecord.code !== code || otpRecord.expiresAt < new Date()) {
-      return res.status(400).json({ success: false, message: 'Tasdiqlash kodi noto\'g\'ri yoki muddati o\'tgan' });
+
+    if (!otpRecord) {
+      return res.status(400).json({ success: false, message: 'Tasdiqlash kodi topilmadi. Yangi kod so\'rang.' });
     }
 
-    // Valid OTP - clean it up
+    // Check if OTP was already used (reuse protection)
+    if (otpRecord.used) {
+      return res.status(400).json({ success: false, message: 'Bu kod allaqachon ishlatilgan. Yangi kod so\'rang.' });
+    }
+
+    // Check expiration
+    if (otpRecord.expiresAt < new Date()) {
+      await OTP.deleteOne({ phone });
+      return res.status(400).json({ success: false, message: 'Tasdiqlash kodi muddati o\'tgan. Yangi kod so\'rang.' });
+    }
+
+    // Track attempts (max 5 per OTP)
+    if (otpRecord.attempts >= 5) {
+      await OTP.deleteOne({ phone });
+
+      await auditLog.log({
+        action: 'auth.otp.max_attempts',
+        actor: { ip: req.ip },
+        target: { type: 'phone', id: phone },
+        level: 'warn',
+      });
+
+      return res.status(400).json({
+        success: false,
+        message: 'Urinishlar soni tugadi. Yangi kod so\'rang.',
+      });
+    }
+
+    // Verify code
+    if (otpRecord.code !== code) {
+      // Increment attempt counter
+      otpRecord.attempts = (otpRecord.attempts || 0) + 1;
+      await otpRecord.save();
+
+      return res.status(400).json({
+        success: false,
+        message: `Tasdiqlash kodi noto'g'ri. ${5 - otpRecord.attempts} ta urinish qoldi.`,
+      });
+    }
+
+    // Valid OTP - mark as used, then delete
+    otpRecord.used = true;
+    await otpRecord.save();
     await OTP.deleteOne({ phone });
 
     let account;
@@ -108,11 +169,21 @@ exports.verifyOTP = async (req, res) => {
       }
     }
 
-    const token = generateToken(account._id, role);
+    // Generate both access and refresh tokens
+    const token = generateAccessToken(account._id, role);
+    const refreshToken = generateRefreshToken(account._id, role);
+
+    // Audit log
+    await auditLog.log({
+      action: 'auth.login.success',
+      actor: { id: account._id, role, ip: req.ip },
+      target: { type: isDriverLogin ? 'driver' : 'user', id: account._id },
+    });
 
     return res.status(200).json({
       success: true,
       token,
+      refreshToken,
       user: {
         id: account._id,
         phone: account.phone,
@@ -275,11 +346,19 @@ exports.adminLogin = async (req, res) => {
         });
       }
 
-      const token = generateToken(admin._id, 'admin');
+      const token = generateAccessToken(admin._id, 'admin');
+      const refreshToken = generateRefreshToken(admin._id, 'admin');
+
+      await auditLog.log({
+        action: 'auth.admin.login',
+        actor: { id: admin._id, role: 'admin', ip: req.ip },
+        target: { type: 'user', id: admin._id },
+      });
 
       return res.status(200).json({
         success: true,
         token,
+        refreshToken,
         user: {
           id: admin._id,
           phone: admin.phone,
@@ -289,6 +368,13 @@ exports.adminLogin = async (req, res) => {
         },
       });
     } else {
+      await auditLog.log({
+        action: 'auth.admin.login_failed',
+        actor: { ip: req.ip },
+        details: { login },
+        level: 'warn',
+      });
+
       return res.status(401).json({ success: false, message: 'Login yoki parol noto\'g\'ri!' });
     }
   } catch (error) {
@@ -343,6 +429,13 @@ exports.payCommission = async (req, res) => {
       balanceAfter: driver.balance,
       status: 'completed',
       description: 'Mock CLICK orqali qarz to\'landi',
+    });
+
+    await auditLog.log({
+      action: 'payment.commission.paid',
+      actor: { id: driver._id, role: 'driver', ip: req.ip },
+      target: { type: 'driver', id: driver._id },
+      details: { amount, prevBalance, newBalance: driver.balance },
     });
 
     return res.status(200).json({

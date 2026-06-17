@@ -17,9 +17,9 @@ exports.login = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Restoran topilmadi.' });
     }
 
-    // Direct password match (for simplicity, or hashed check if bcrypt is imported)
-    // Checking plain password or hashed password.
-    if (restaurant.password !== password) {
+    // Secure password comparison using bcrypt
+    const isMatch = await restaurant.comparePassword(password);
+    if (!isMatch) {
       return res.status(401).json({ success: false, message: 'Noto\'g\'ri parol.' });
     }
 

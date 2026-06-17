@@ -1,9 +1,10 @@
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
 const EatsCourierSchema = new mongoose.Schema({
   name: { type: String, required: true },
   phone: { type: String, required: true, unique: true },
-  password: { type: String, required: true, default: '123456' },
+  password: { type: String, required: true },
   vehicleType: { type: String, enum: ['walking', 'bicycle', 'scooter', 'car'], required: true },
   location: {
     type: { type: String, enum: ['Point'], default: 'Point' },
@@ -15,6 +16,23 @@ const EatsCourierSchema = new mongoose.Schema({
   status: { type: String, enum: ['idle', 'delivering'], default: 'idle' },
   createdAt: { type: Date, default: Date.now }
 });
+
+// Hash password before saving
+EatsCourierSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  try {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Compare password method
+EatsCourierSchema.methods.comparePassword = async function (candidatePassword) {
+  return bcrypt.compare(candidatePassword, this.password);
+};
 
 EatsCourierSchema.index({ location: '2dsphere' });
 module.exports = mongoose.model('EatsCourier', EatsCourierSchema);
