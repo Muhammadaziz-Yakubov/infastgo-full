@@ -76,6 +76,15 @@ export default function RideProgressScreen({
       user.id,
       (statusUpdate) => {
         if (statusUpdate.status) {
+          if (statusUpdate.status === 'cancelled') {
+            Alert.alert(
+              "Buyurtma bekor qilindi",
+              statusUpdate.message || "Afsuski, yaqin orada bo'sh haydovchilar topilmadi.",
+              [{ text: "OK", onPress: () => onRideFinished() }]
+            );
+            return;
+          }
+
           setRide((prev) => {
             const updated = { ...prev, status: statusUpdate.status };
             if (statusUpdate.driver) {

@@ -11,6 +11,11 @@ const RideSchema = new mongoose.Schema({
     ref: 'Driver',
     default: null,
   },
+  excludedDrivers: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Driver',
+    default: [],
+  }],
   pickup: {
     lat: { type: Number, required: true },
     lng: { type: Number, required: true },

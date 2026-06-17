@@ -171,10 +171,13 @@ exports.requestRide = async (req, res) => {
 };
 
 // The Ride dispatching loop
-const dispatchRide = async (rideId, excludeDriverIds = []) => {
+const dispatchRide = async (rideId) => {
   try {
     const ride = await Ride.findById(rideId).populate('userId');
     if (!ride || ride.status !== 'searching') return;
+
+    // Use database persisted exclusions
+    const excludeDriverIds = ride.excludedDrivers ? ride.excludedDrivers.map(id => id.toString()) : [];
 
     // Find nearest driver matching the requested tariff
     const driver = await matchService.findNearestDriver(
@@ -224,31 +227,34 @@ const dispatchRide = async (rideId, excludeDriverIds = []) => {
     if (!success) {
       // Driver socket not connected or offline, retry with different driver
       console.log(`[Dispatch] Driver ${driver._id} socket not active. Retrying...`);
-      excludeDriverIds.push(driver._id.toString());
-      dispatchRide(rideId, excludeDriverIds);
+      await Ride.findByIdAndUpdate(rideId, {
+        $addToSet: { excludedDrivers: driver._id },
+        $set: { driverId: null }
+      });
+      dispatchRide(rideId);
       return;
     }
 
-    // Set a timeout of 30 seconds for driver to accept.
+    // Set a timeout of 15 seconds for driver to accept.
     // If they don't accept, we consider it a rejection.
     setTimeout(async () => {
       try {
         const checkRide = await Ride.findById(rideId);
         // If the ride is still searching/assigned to this driver and they haven't accepted
-        if (checkRide && checkRide.status === 'searching' && checkRide.driverId.toString() === driver._id.toString()) {
+        if (checkRide && checkRide.status === 'searching' && checkRide.driverId && checkRide.driverId.toString() === driver._id.toString()) {
           console.log(`[Dispatch] Driver ${driver._id} request timed out for ride ${rideId}`);
           
-          // Re-add driver to exclusions
-          excludeDriverIds.push(driver._id.toString());
-          
           checkRide.driverId = null;
+          if (!checkRide.excludedDrivers.includes(driver._id)) {
+            checkRide.excludedDrivers.push(driver._id);
+          }
           await checkRide.save();
 
           // Notify driver that the offer has timed out so the frontend removes the screen
           socketService.sendToDriver(driver._id.toString(), 'rideOfferTimeout', { rideId });
           
           // Retry matching
-          dispatchRide(rideId, excludeDriverIds);
+          dispatchRide(rideId);
         }
       } catch (err) {
         console.error('Error in dispatch timeout callback:', err);
@@ -349,12 +355,15 @@ exports.rejectRide = async (req, res) => {
 
     console.log(`[Controller] Driver ${driverId} rejected ride ${rideId}`);
     
-    // Clear targeted driver
+    // Clear targeted driver and add to exclusions
     ride.driverId = null;
+    if (!ride.excludedDrivers.includes(driverId)) {
+      ride.excludedDrivers.push(driverId);
+    }
     await ride.save();
 
-    // Trigger match for next closest driver, excluding the current one
-    dispatchRide(rideId, [driverId]);
+    // Trigger match for next closest driver
+    dispatchRide(rideId);
 
     return res.status(200).json({ success: true, message: 'Buyurtma rad etildi' });
   } catch (error) {
